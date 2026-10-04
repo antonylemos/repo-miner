@@ -1,0 +1,137 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "id": "terminology-microfrontend-repositories",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "microfrontend in:name,description,readme"
+    },
+    {
+      "id": "terminology-microfrontend-code",
+      "strategy": "terminology",
+      "endpoint": "code",
+      "q": "microfrontend in:file"
+    },
+    {
+      "id": "terminology-micro-frontend-repositories",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "micro-frontend in:name,description,readme"
+    },
+    {
+      "id": "terminology-micro-frontend-code",
+      "strategy": "terminology",
+      "endpoint": "code",
+      "q": "micro-frontend in:file"
+    },
+    {
+      "id": "terminology-quoted-micro-frontend-repositories",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "\"micro frontend\" in:name,description,readme"
+    },
+    {
+      "id": "terminology-quoted-micro-frontend-code",
+      "strategy": "terminology",
+      "endpoint": "code",
+      "q": "\"micro frontend\" in:file"
+    },
+    {
+      "id": "terminology-quoted-micro-frontends-repositories",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "\"micro frontends\" in:name,description,readme"
+    },
+    {
+      "id": "terminology-quoted-micro-frontends-code",
+      "strategy": "terminology",
+      "endpoint": "code",
+      "q": "\"micro frontends\" in:file"
+    },
+    {
+      "id": "technology-module-federation-repositories",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "\"Module Federation\" in:name,description,readme"
+    },
+    {
+      "id": "technology-module-federation-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"Module Federation\" in:file"
+    },
+    {
+      "id": "technology-single-spa-repositories",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "single-spa in:name,description,readme"
+    },
+    {
+      "id": "technology-single-spa-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "single-spa in:file"
+    },
+    {
+      "id": "technology-web-components-repositories",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "\"Web Components\" in:name,description,readme"
+    },
+    {
+      "id": "technology-web-components-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"Web Components\" in:file"
+    },
+    {
+      "id": "broader-frontend-composition-repositories",
+      "strategy": "broader",
+      "endpoint": "repositories",
+      "q": "\"frontend composition\" in:name,description,readme"
+    },
+    {
+      "id": "broader-frontend-composition-code",
+      "strategy": "broader",
+      "endpoint": "code",
+      "q": "\"frontend composition\" in:file"
+    },
+    {
+      "id": "broader-frontend-decomposition-repositories",
+      "strategy": "broader",
+      "endpoint": "repositories",
+      "q": "\"frontend decomposition\" in:name,description,readme"
+    },
+    {
+      "id": "broader-frontend-decomposition-code",
+      "strategy": "broader",
+      "endpoint": "code",
+      "q": "\"frontend decomposition\" in:file"
+    },
+    {
+      "id": "broader-frontend-orchestration-repositories",
+      "strategy": "broader",
+      "endpoint": "repositories",
+      "q": "\"frontend orchestration\" in:name,description,readme"
+    },
+    {
+      "id": "broader-frontend-orchestration-code",
+      "strategy": "broader",
+      "endpoint": "code",
+      "q": "\"frontend orchestration\" in:file"
+    },
+    {
+      "id": "broader-federated-modules-repositories",
+      "strategy": "broader",
+      "endpoint": "repositories",
+      "q": "\"federated modules\" in:name,description,readme"
+    },
+    {
+      "id": "broader-federated-modules-code",
+      "strategy": "broader",
+      "endpoint": "code",
+      "q": "\"federated modules\" in:file"
+    }
+  ]
+}
