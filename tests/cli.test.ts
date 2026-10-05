@@ -254,8 +254,8 @@ describe('discovery CLI', () => {
       'graphql',
     ]);
     const candidates = readFileSync(join(outputDir, 'candidates.csv'), 'utf8');
-    expect(candidates).toContain(
-      '92,org/r92,https://github.com/org/r92,in_scope,2025-06-01T00:00:00Z,enrichment,ok',
+    expect(candidates).toMatch(
+      /92,org\/r92,https:\/\/github\.com\/org\/r92,in_scope,2025-06-01T00:00:00Z,enrichment,[^,]+,ok/,
     );
   });
 

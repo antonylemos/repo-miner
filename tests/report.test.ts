@@ -90,14 +90,29 @@ describe('exportRun', () => {
         row.id,
         row.scope,
         row.pushed_at_source,
+        row.pushed_at_observed_at,
         row.enrichment_status,
         row.strategies,
       ]),
     ).toEqual([
-      ['1', 'in_scope', 'search', '', 'terminology;technology'],
-      ['2', 'out_of_scope_temporal', 'search', '', 'terminology'],
-      ['3', 'in_scope', 'enrichment', 'ok', 'technology'],
-      ['4', 'unknown', '', 'pending', 'technology'],
+      [
+        '1',
+        'in_scope',
+        'search',
+        'fetched-query-a',
+        '',
+        'terminology;technology',
+      ],
+      [
+        '2',
+        'out_of_scope_temporal',
+        'search',
+        'fetched-query-a',
+        '',
+        'terminology',
+      ],
+      ['3', 'in_scope', 'enrichment', 'enriched-at', 'ok', 'technology'],
+      ['4', 'unknown', '', '', 'pending', 'technology'],
     ]);
     expect(JSON.parse(rows[2].enrichment_json)).toEqual({
       pushedAt: '2025-03-01T00:00:00Z',
