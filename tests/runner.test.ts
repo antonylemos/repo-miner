@@ -1,271 +1,306 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { catalogHash } from '../src/discovery/catalog.js';
 import { runDiscovery } from '../src/discovery/runner.js';
-import { openStore } from '../src/discovery/storage.js';
 import type {
-  Catalog,
-  Query,
+  EnrichmentClient,
+  EnrichmentTarget,
   SearchClient,
-  SearchPage,
 } from '../src/discovery/types.js';
+import {
+  catalogOf,
+  cleanupTestStores,
+  createTestStore,
+  hit,
+  page,
+  query,
+} from './helpers.js';
 
-const dirs: string[] = [];
-const stores: ReturnType<typeof openStore>[] = [];
-const firstQuery: Query = {
-  id: 'first',
-  strategy: 'terminology',
-  endpoint: 'repositories',
-  q: 'first',
+const first = query({ id: 'first' });
+const second = query({ id: 'second' });
+const oneQuery = catalogOf([first]);
+const twoQueries = catalogOf([first, second]);
+const fixedNow = () => 'now';
+const noEnrichment: EnrichmentClient = {
+  async fetchRepositories() {
+    throw new Error('enrichment should not be called');
+  },
 };
-const oneQueryCatalog: Catalog = { version: 1, queries: [firstQuery] };
+const noPush = { fork: false };
 
-function createStore(catalog: Catalog) {
-  const dir = mkdtempSync(join(tmpdir(), 'discovery-runner-'));
-  dirs.push(dir);
-  const store = openStore(join(dir, 'discovery.sqlite'));
-  stores.push(store);
-  store.createRun(catalog, catalogHash(catalog), 'started');
-  return store;
+afterEach(cleanupTestStores);
+
+function run(
+  store: ReturnType<typeof createTestStore>['store'],
+  client: SearchClient,
+  enrichmentClient: EnrichmentClient = noEnrichment,
+  signal = new AbortController().signal,
+) {
+  return runDiscovery({
+    store,
+    client,
+    enrichmentClient,
+    signal,
+    now: fixedNow,
+  });
 }
-
-function searchPage(
-  ids: number[],
-  hasNext = false,
-  totalCount = ids.length,
-  incomplete = false,
-): SearchPage {
-  return {
-    totalCount,
-    incomplete,
-    hasNext,
-    hits: ids.map((id) => ({
-      candidate: {
-        id,
-        fullName: `org/${id}`,
-        url: `https://github.com/org/${id}`,
-        metadata: {},
-      },
-      path: null,
-      url: `https://github.com/org/${id}`,
-    })),
-  };
-}
-
-const fixedNow = () => 'finished';
-
-afterEach(() => {
-  for (const store of stores.splice(0)) store.close();
-  for (const dir of dirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
 
 describe('runDiscovery', () => {
-  it('should collect all candidates even when there are more than fifteen', async () => {
-    const store = createStore(oneQueryCatalog);
+  it('should collect every candidate and finish complete', async () => {
+    const { store } = createTestStore(oneQuery);
     const client: SearchClient = {
       async search() {
-        return searchPage(Array.from({ length: 20 }, (_, index) => index + 1));
+        return page(Array.from({ length: 20 }, (_, index) => hit(index + 1)));
       },
     };
 
-    const result = await runDiscovery({
-      catalog: oneQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
+    const result = await run(store, client);
 
     expect(store.readCandidates()).toHaveLength(20);
     expect(result.run.state).toBe('complete');
   });
 
+  it('should search every subquery of a partitioned query with its effective q', async () => {
+    const partitioned = catalogOf([
+      query({
+        id: 'p',
+        q: 'x',
+        partition: { by: 'created', from: '2026-09-01', interval: 'month' },
+      }),
+    ]);
+    const { store } = createTestStore(partitioned);
+    const searched: string[] = [];
+    const client: SearchClient = {
+      async search(subquery) {
+        searched.push(subquery.q);
+        return page([]);
+      },
+    };
+
+    await run(store, client);
+
+    expect(searched).toEqual([
+      'x pushed:>=2024-01-01 created:<2026-09-01',
+      'x pushed:>=2024-01-01 created:2026-09-01..2026-09-30',
+      'x pushed:>=2024-01-01 created:>=2026-10-01',
+    ]);
+  });
+
   it('should resume from the first uncommitted page', async () => {
-    const store = createStore(oneQueryCatalog);
+    const { store, subqueries } = createTestStore(oneQuery);
     store.savePage(
-      firstQuery,
+      subqueries[0],
       1,
-      searchPage([1], true, 2),
-      { queryId: firstQuery.id, nextPage: 2, state: 'pending' },
+      page([hit(1)], { hasNext: true, totalCount: 2 }),
+      { subqueryId: 'first', nextPage: 2, state: 'pending' },
       'committed',
     );
     const requestedPages: number[] = [];
     const client: SearchClient = {
-      async search(_query, pageNumber) {
+      async search(_subquery, pageNumber) {
         requestedPages.push(pageNumber);
-        return searchPage([2]);
+        return page([hit(2)], { totalCount: 2 });
       },
     };
 
-    await runDiscovery({
-      catalog: oneQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
+    await run(store, client);
 
     expect(requestedPages).toEqual([2]);
     expect(store.readCandidates().map(({ id }) => id)).toEqual([1, 2]);
   });
 
-  it('should reject a changed catalog before making network requests', async () => {
-    const store = createStore(oneQueryCatalog);
-    const changedCatalog: Catalog = {
-      version: 1,
-      queries: [{ ...firstQuery, q: 'changed' }],
-    };
-    let requests = 0;
+  it('should continue with later subqueries after one fails', async () => {
+    const { store } = createTestStore(twoQueries);
+    const requested: string[] = [];
     const client: SearchClient = {
-      async search() {
-        requests += 1;
-        return searchPage([1]);
+      async search(subquery) {
+        requested.push(subquery.id);
+        if (subquery.id === 'first') throw new Error('temporary failure');
+        return page([hit(2)]);
       },
     };
 
-    await expect(
-      runDiscovery({
-        catalog: changedCatalog,
-        store,
-        client,
-        signal: new AbortController().signal,
-        now: fixedNow,
-      }),
-    ).rejects.toThrow(/catalog/i);
-    expect(requests).toBe(0);
-  });
+    const result = await run(store, client);
 
-  it('should continue with later queries after one query fails', async () => {
-    const secondQuery: Query = { ...firstQuery, id: 'second', q: 'second' };
-    const twoQueryCatalog: Catalog = {
-      version: 1,
-      queries: [firstQuery, secondQuery],
-    };
-    const store = createStore(twoQueryCatalog);
-    const requestedQueries: string[] = [];
-    const client: SearchClient = {
-      async search(query) {
-        requestedQueries.push(query.id);
-        if (query.id === firstQuery.id) throw new Error('temporary failure');
-        return searchPage([2]);
-      },
-    };
-
-    const result = await runDiscovery({
-      catalog: twoQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
-
-    expect(requestedQueries).toEqual(['first', 'second']);
+    expect(requested).toEqual(['first', 'second']);
     expect(store.getCheckpoint('first')).toMatchObject({
       nextPage: 1,
       state: 'failed',
     });
-    expect(store.readCandidates().map(({ id }) => id)).toEqual([2]);
     expect(result.run.state).toBe('partial');
   });
 
-  it('should report results above one thousand as capped', async () => {
-    const store = createStore(oneQueryCatalog);
+  it('should mark capped and incomplete subqueries as partial', async () => {
+    const { store } = createTestStore(twoQueries);
     const client: SearchClient = {
-      async search() {
-        return searchPage([1], false, 1001);
+      async search(subquery) {
+        return subquery.id === 'first'
+          ? page([hit(1)], { totalCount: 1001 })
+          : page([hit(2)], { incomplete: true });
       },
     };
 
-    await runDiscovery({
-      catalog: oneQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
+    await run(store, client);
 
-    expect(store.readCoverage()[0]).toMatchObject({
+    expect(store.readSubqueryCoverage('first')).toMatchObject({
       capped: true,
       state: 'partial',
     });
-  });
-
-  it('should mark incomplete search results as partial', async () => {
-    const store = createStore(oneQueryCatalog);
-    const client: SearchClient = {
-      async search() {
-        return searchPage([1], false, 1, true);
-      },
-    };
-
-    await runDiscovery({
-      catalog: oneQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
-
-    expect(store.readCoverage()[0]).toMatchObject({
+    expect(store.readSubqueryCoverage('second')).toMatchObject({
       incomplete: true,
       state: 'partial',
     });
   });
 
-  it('should fetch every page until the query is exhausted', async () => {
-    const store = createStore(oneQueryCatalog);
+  it('should stop after page ten and mark the subquery capped', async () => {
+    const { store } = createTestStore(oneQuery);
     const requestedPages: number[] = [];
     const client: SearchClient = {
-      async search(_query, pageNumber) {
+      async search(_subquery, pageNumber) {
         requestedPages.push(pageNumber);
-        return pageNumber === 1
-          ? searchPage([1], true, 2)
-          : searchPage([2], false, 2);
+        return page([hit(pageNumber)], { hasNext: true, totalCount: 1000 });
       },
     };
 
-    const result = await runDiscovery({
-      catalog: oneQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
+    await run(store, client);
 
-    expect(requestedPages).toEqual([1, 2]);
-    expect(store.readCandidates().map(({ id }) => id)).toEqual([1, 2]);
+    expect(requestedPages).toHaveLength(10);
+    expect(store.readSubqueryCoverage('first')).toMatchObject({
+      capped: true,
+      state: 'partial',
+    });
+  });
+
+  it('should enrich candidates without pushed_at in batches of one hundred', async () => {
+    const { store } = createTestStore(oneQuery);
+    const client: SearchClient = {
+      async search() {
+        return page([
+          ...Array.from({ length: 150 }, (_, index) =>
+            hit(index + 1, { metadata: noPush }),
+          ),
+          hit(999),
+        ]);
+      },
+    };
+    const batches: EnrichmentTarget[][] = [];
+    const enrichmentClient: EnrichmentClient = {
+      async fetchRepositories(targets) {
+        batches.push(targets);
+        return targets.map((target) => ({
+          repositoryId: target.repositoryId,
+          status: 'ok' as const,
+          data: { pushedAt: '2025-01-01T00:00:00Z' },
+          reason: null,
+        }));
+      },
+    };
+
+    const result = await run(store, client, enrichmentClient);
+
+    expect(batches.map((batch) => batch.length)).toEqual([100, 50]);
+    expect(batches.flat().some((target) => target.repositoryId === 999)).toBe(
+      false,
+    );
+    expect(store.readEnrichmentCounts().ok).toBe(150);
     expect(result.run.state).toBe('complete');
   });
 
-  it('should preserve committed pages and leave later queries pending on abort', async () => {
-    const secondQuery: Query = { ...firstQuery, id: 'second', q: 'second' };
-    const twoQueryCatalog: Catalog = {
-      version: 1,
-      queries: [firstQuery, secondQuery],
+  it('should record a failed batch and finish partial', async () => {
+    const { store } = createTestStore(oneQuery);
+    const client: SearchClient = {
+      async search() {
+        return page([hit(1, { metadata: noPush })]);
+      },
     };
-    const store = createStore(twoQueryCatalog);
+    const enrichmentClient: EnrichmentClient = {
+      async fetchRepositories() {
+        throw new Error('GraphQL unavailable');
+      },
+    };
+
+    const result = await run(store, client, enrichmentClient);
+
+    expect(store.readCandidates()[0].enrichment).toMatchObject({
+      status: 'failed',
+      reason: 'GraphQL unavailable',
+    });
+    expect(result.run.state).toBe('partial');
+  });
+
+  it('should retry only failed enrichment on resume', async () => {
+    const { store } = createTestStore(oneQuery);
+    let searches = 0;
+    const client: SearchClient = {
+      async search() {
+        searches += 1;
+        return page([
+          hit(1, { metadata: noPush }),
+          hit(2, { metadata: noPush }),
+        ]);
+      },
+    };
+    const attempts: number[][] = [];
+    const enrichmentClient: EnrichmentClient = {
+      async fetchRepositories(targets) {
+        attempts.push(targets.map((target) => target.repositoryId));
+        return targets.map((target) =>
+          attempts.length === 1 && target.repositoryId === 2
+            ? {
+                repositoryId: 2,
+                status: 'failed' as const,
+                data: null,
+                reason: 'x',
+              }
+            : {
+                repositoryId: target.repositoryId,
+                status: 'ok' as const,
+                data: { pushedAt: '2025-01-01T00:00:00Z' },
+                reason: null,
+              },
+        );
+      },
+    };
+
+    expect((await run(store, client, enrichmentClient)).run.state).toBe(
+      'partial',
+    );
+    expect((await run(store, client, enrichmentClient)).run.state).toBe(
+      'complete',
+    );
+    expect(searches).toBe(1);
+    expect(attempts).toEqual([[1, 2], [2]]);
+  });
+
+  it('should stay partial when aborted before enrichment', async () => {
+    const { store } = createTestStore(oneQuery);
     const controller = new AbortController();
     const client: SearchClient = {
-      async search(query, pageNumber) {
-        if (query.id === firstQuery.id && pageNumber === 1) {
-          return searchPage([1], true, 2);
+      async search() {
+        controller.abort(new Error('interrupted'));
+        return page([hit(1, { metadata: noPush })]);
+      },
+    };
+
+    const result = await run(store, client, noEnrichment, controller.signal);
+
+    expect(store.getCheckpoint('first').state).toBe('complete');
+    expect(store.readEnrichmentCounts().pending).toBe(1);
+    expect(result.run.state).toBe('partial');
+  });
+
+  it('should preserve committed pages and leave later subqueries pending on abort', async () => {
+    const { store } = createTestStore(twoQueries);
+    const controller = new AbortController();
+    const client: SearchClient = {
+      async search(subquery, pageNumber) {
+        if (subquery.id === 'first' && pageNumber === 1) {
+          return page([hit(1)], { hasNext: true, totalCount: 2 });
         }
         controller.abort(new Error('interrupted'));
         throw new Error('interrupted');
       },
     };
 
-    const result = await runDiscovery({
-      catalog: twoQueryCatalog,
-      store,
-      client,
-      signal: controller.signal,
-      now: fixedNow,
-    });
+    const result = await run(store, client, noEnrichment, controller.signal);
 
     expect(store.readCandidates().map(({ id }) => id)).toEqual([1]);
     expect(store.getCheckpoint('first')).toMatchObject({
@@ -277,31 +312,5 @@ describe('runDiscovery', () => {
       state: 'pending',
     });
     expect(result.run.state).toBe('partial');
-  });
-
-  it('should cap a query that still has another page after page ten', async () => {
-    const store = createStore(oneQueryCatalog);
-    const requestedPages: number[] = [];
-    const client: SearchClient = {
-      async search(_query, pageNumber) {
-        requestedPages.push(pageNumber);
-        return searchPage([pageNumber], true, 1000);
-      },
-    };
-
-    await runDiscovery({
-      catalog: oneQueryCatalog,
-      store,
-      client,
-      signal: new AbortController().signal,
-      now: fixedNow,
-    });
-
-    expect(requestedPages).toHaveLength(10);
-    expect(store.getCheckpoint('first')).toMatchObject({
-      nextPage: null,
-      state: 'partial',
-    });
-    expect(store.readCoverage()[0].capped).toBe(true);
   });
 });
