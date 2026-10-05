@@ -1,11 +1,20 @@
-# Descoberta de repositórios
+# repo-miner
 
-CLI TypeScript para buscar candidatos públicos no GitHub, registrar a proveniência de cada resultado e exportar um diagnóstico de volume e cobertura. Esta etapa coleta resultados de busca; ela não confirma implementações de micro-frontends, abordagens ou elegibilidade.
+CLI em TypeScript para descobrir repositórios públicos do GitHub a partir de um catálogo versionado de consultas, de forma reproduzível e auditável. Para cada repositório encontrado, a ferramenta registra por qual consulta, em que data e por qual caminho ele apareceu, e exporta os resultados em CSV, JSON e Markdown.
+
+A ferramenta não depende de um tema. O tema de um estudo está no catálogo, e o código não sabe nada sobre ele. O mesmo processo serve a qualquer estudo de mineração de repositórios: adoção de uma tecnologia, uso de um padrão arquitetural, presença de uma prática.
+
+**O que a ferramenta faz:** executa buscas no GitHub, recupera integralmente cada consulta particionada, deduplica repositórios sem perder as origens, completa metadados, aplica um recorte por atividade recente e documenta a cobertura obtida.
+
+**O que ela não faz:** não confirma que um candidato pertence ao fenômeno pesquisado, não classifica repositórios e não mede prevalência. Os candidatos seguem para triagem humana.
+
+O guia [PROCESS.md](PROCESS.md) descreve, passo a passo e para quem não conhece o projeto, como a mineração acontece e como os dados são tratados.
 
 ## Requisitos e instalação
 
 - Node.js 26.9.0, conforme `.nvmrc`.
 - pnpm 9.15.9, declarado em `package.json`.
+- Um token do GitHub com acesso de leitura a repositórios públicos.
 
 Com fnm e Corepack instalados:
 
@@ -27,77 +36,121 @@ pnpm test
 
 ## Credencial do GitHub
 
-As buscas de descoberta exigem `GITHUB_TOKEN`. Configure a credencial no ambiente do processo que executa a CLI. A CLI usa o token somente em `discover`; não o grava no banco nem nos relatórios. Comandos `report` e `--help` não precisam de credencial.
+As buscas exigem `GITHUB_TOKEN` no ambiente do processo. O token é usado apenas por `discover` e nunca é gravado no banco, nos relatórios ou nas mensagens de erro. `report` e `--help` não precisam dele.
 
 ```sh
 export GITHUB_TOKEN='<token>'
 ```
 
-## Comandos
-
-Conferir a partição antes de uma rodada. O dry-run expande o catálogo, consulta apenas o total de cada subconsulta e não cria arquivos; retorna `2` se alguma subconsulta passar de 1.000 resultados:
+## Uso rápido
 
 ```sh
-pnpm run cli discover --queries config/discovery.queries.json --dry-run > dry-run.md
-```
+# 1. Conferir o volume de cada subconsulta, sem criar arquivos
+pnpm run cli discover --queries <catalogo.json> --dry-run > dry-run.md
 
-Criar uma rodada nova:
+# 2. Executar uma rodada num diretório novo
+pnpm run cli discover --queries <catalogo.json> --output data/discovery/rodada-001
 
-```sh
-pnpm run cli discover --queries config/discovery.queries.json --output data/discovery/rodada-001
-```
-
-Retomar uma rodada interrompida ou parcial. A retomada usa o catálogo e as subconsultas persistidos em `discovery.sqlite` e refaz apenas buscas e enriquecimentos pendentes ou com falha:
-
-```sh
+# 3. Retomar uma rodada interrompida ou parcial
 pnpm run cli discover --resume data/discovery/rodada-001
-```
 
-Regenerar os relatórios sem token:
-
-```sh
+# 4. Regenerar os relatórios a partir do banco, sem token
 pnpm run cli report --run data/discovery/rodada-001
 ```
 
-Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`. Bancos criados pela versão anterior do catálogo não são abertos.
+O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`, e bancos criados por versões anteriores do formato não são abertos.
 
 ## Catálogo
 
-O catálogo (`version: 2`) declara um recorte global `filters.pushedSince` e, por consulta, `rationale` obrigatório e uma partição opcional:
+O catálogo é um arquivo JSON que descreve o que buscar e por quê. Exemplo mínimo:
 
-- `{"by": "created", "from": "2019-01-01", "interval": "month" | "quarter" | "year"}` para `repositories`;
-- `{"by": "size", "bounds": [0, 1000, 2000]}` para `code`.
+```json
+{
+  "version": 2,
+  "filters": { "pushedSince": "2024-01-01" },
+  "queries": [
+    {
+      "id": "terminology-topic-example",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "topic:example-term",
+      "rationale": "Tópico explícito que nomeia o fenômeno estudado."
+    },
+    {
+      "id": "technology-example-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"example-library\" filename:package.json",
+      "rationale": "Dependência declarada, independente da terminologia.",
+      "partition": { "by": "size", "bounds": [0, 1000, 2000, 4000] }
+    }
+  ]
+}
+```
 
-A CLI expande cada consulta em subconsultas com `pushed:>=`, `created:` e `size:` gerados; esses qualificadores não podem ser escritos à mão em `q`. Candidatos encontrados apenas pela busca de código são enriquecidos pela API GraphQL para obter `pushedAt` e metadados de filtragem.
+| Campo | Significado |
+| --- | --- |
+| `filters.pushedSince` | Recorte por atividade: só entram repositórios com push nessa data ou depois. |
+| `id` | Identificador único e estável da consulta. |
+| `strategy` | Procedimento de descoberta: `terminology` (termos que nomeiam o fenômeno), `technology` (tecnologias ou artefatos associados a ele) ou `broader` (termos amplos ou adjacentes, para reduzir viés de terminologia). |
+| `endpoint` | `repositories` (nome, descrição, README e tópicos) ou `code` (conteúdo de arquivos). |
+| `q` | Expressão de busca do GitHub, sem `pushed:`, `created:` ou `size:`, que a ferramenta gera. |
+| `rationale` | Por que a consulta existe. Obrigatório. |
+| `partition` | Opcional. `{"by": "created", "from": "AAAA-MM-01", "interval": "month" \| "quarter" \| "year"}` para `repositories`, ou `{"by": "size", "bounds": [0, …]}` para `code`. |
+
+A API de busca devolve no máximo 1.000 resultados por consulta. A partição divide uma consulta grande em subconsultas menores, para que nenhum resultado seja perdido pelo corte do GitHub. Para mudar o catálogo, crie uma rodada nova; uma rodada sempre usa o catálogo gravado quando foi criada.
 
 ## Saídas
 
-O diretório da rodada contém `discovery.sqlite`, que guarda páginas, candidatos, hits, checkpoints e proveniência. A CLI exporta:
+Cada rodada grava em seu diretório:
 
-- `candidates.csv`: um registro por id de repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at`, sua fonte e a data em que esse `pushed_at` foi observado (`pushed_at_observed_at`), status de enriquecimento e estratégias que o encontraram;
-- `discovery-hits.csv`: todas as origens, com consulta, subconsulta, `q` efetivo, endpoint, data de coleta e caminho;
-- `coverage.json`: cobertura por consulta e por subconsulta, contagens por `scope`, contagens por estratégia (`in_scope` e todas), interseções entre estratégias e status do enriquecimento;
-- `report.md`: diagnóstico narrativo, contagens, interseções, subconsultas saturadas e limitações;
-- `manifest.json`: id, datas, recorte temporal (`pushedSince`), data de expansão (`expansionDate`) e hash do catálogo da rodada, versões disponíveis, revisão e estado da árvore git (`git.dirty`) e SHA-256 dos arquivos exportados.
-
-Os arquivos CSV preservam Unicode e escapam vírgulas, aspas e quebras de linha conforme as regras CSV. Metadados de busca ficam na coluna `metadata_json`.
+| Arquivo | Conteúdo |
+| --- | --- |
+| `discovery.sqlite` | Fonte de verdade da rodada: catálogo, subconsultas, páginas brutas, candidatos, hits, enriquecimentos e checkpoints. |
+| `candidates.csv` | Um registro por repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at`, sua fonte, a data em que foi observado (`pushed_at_observed_at`), status de enriquecimento e estratégias que o encontraram. |
+| `discovery-hits.csv` | Cada ocorrência de um repositório numa subconsulta, com consulta, subconsulta, `q` efetivo, endpoint, data de coleta e caminho do arquivo. |
+| `coverage.json` | Cobertura por consulta e por subconsulta, contagens por `scope` e por estratégia, interseções entre estratégias e status do enriquecimento. |
+| `report.md` | Diagnóstico legível da rodada, incluindo subconsultas saturadas e limitações. |
+| `manifest.json` | Identificação da rodada, recorte, data de expansão, hash do catálogo, versões, revisão e estado da árvore git (`git.dirty`) e SHA-256 dos arquivos exportados. |
 
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou descoberta em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ficou `pending` ou `failed`;
-- `1`: erro fatal, como opções inválidas, catálogo inválido, credencial ausente para descoberta, diretório ou banco inexistente ou conflitante, banco de versão anterior não suportado, ou falha na requisição do dry-run;
-- `2`: rodada parcial, incluindo subconsulta saturada, incompleta ou com falha recuperável, enriquecimento `pending` ou `failed`, interrupção, ou dry-run com alguma subconsulta acima de 1.000 resultados.
-
-Uma rodada parcial conserva as páginas confirmadas e os checkpoints para retomada. Uma subconsulta marcada como parcial por incompletude ou limite de resultados é terminal nessa rodada; revise o catálogo e crie outra rodada para refazer a busca.
+- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ficou `pending` ou `failed`.
+- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato anterior, ou falha de requisição no dry-run.
+- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados.
 
 ## Limitações
 
-A API de busca do GitHub depende da indexação do serviço. Os resultados podem mudar durante a rodada, ser incompletos e estar sujeitos ao limite de resultados por subconsulta. O executor busca no máximo dez páginas por subconsulta e registra buscas saturadas para revisão. Os totais descrevem os resultados destas consultas, não a população de repositórios.
+- A busca depende da indexação do GitHub, que pode mudar durante a rodada e marcar resultados como incompletos. Os totais descrevem as consultas executadas, não a população de repositórios.
+- As APIs de busca excluem forks por padrão.
+- A busca de código considera apenas a branch padrão e arquivos de até 384 KB, e não aceita filtros de data. O recorte temporal desses candidatos depende do enriquecimento.
+- Contagens não são prevalência nem casos confirmados. Pertinência, classificação e elegibilidade ficam para a triagem humana.
 
-As contagens não são prevalência de micro-frontends nem contagens de implementações confirmadas. Classificação arquitetural, tipo de projeto e elegibilidade ficam para triagem humana posterior. O armazenamento usa `node:sqlite`, integrado à versão de Node fixada no projeto.
+## Caso de uso: micro-frontends
 
-As APIs de busca excluem forks por padrão. A busca de código considera apenas a branch padrão e arquivos de até 384 KB e não aceita filtros de data; o recorte temporal desses candidatos depende do enriquecimento.
+O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-frontends.json) foi construído para o estudo *What Do Micro-Frontends Look Like in Software Repositories?*, que caracteriza como implementações de micro-frontends (MFEs) aparecem em repositórios. A descoberta produz o conjunto de candidatos que depois passa por triagem e classificação (*MFE-implemented*, *Non-MFE* ou *Uncertain*).
 
-## Registro da etapa
+**As três estratégias neste estudo** (32 consultas):
 
-Consulte [01-descoberta.md](docs/etapas/01-descoberta.md) para o estado e os resultados verificados da etapa.
+| Estratégia | Consultas | Exemplos |
+| --- | ---: | --- |
+| `terminology` | 8 | `topic:microfrontends`; `"micro frontend" in:name,description,readme` |
+| `technology` | 19 | `topic:module-federation`; `"single-spa" filename:package.json`; `ModuleFederationPlugin remotes extension:js`; frameworks como qiankun, wujie, micro-app e Piral |
+| `broader` | 5 | `"frontend composition"`, `"frontend orchestration"`, `"micro apps" frontend` |
+
+**Decisões do estudo:**
+
+- **Recorte por atividade** (`pushedSince: 2024-01-01`): prioriza repositórios ativos nos dois últimos anos, sem excluir projetos antigos que continuam mantidos.
+- **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 11 e 17 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
+- **Termos com hífen entre aspas:** sem aspas, `single-spa` é lido como "single" e "spa" (356 mil resultados contra 6 mil com aspas).
+- **Consultas de tecnologia sobre artefatos** (`package.json`, configurações com `remotes`, `registerApplication`), e não sobre prosa, para encontrar repositórios que usam a tecnologia sem se descrever como MFE.
+- **Risco conhecido:** Web Components não tem um artefato que distinga uso como MFE de uma biblioteca de componentes. A única consulta dessa abordagem exige que o README também mencione micro-frontends; os demais casos devem chegar pela terminologia e ser identificados na triagem.
+
+**Execução:**
+
+```sh
+pnpm run cli discover --queries config/catalogs/micro-frontends.json --dry-run > dry-run.md
+pnpm run cli discover --queries config/catalogs/micro-frontends.json --output data/discovery/mfe-rodada-001
+```
+
+O [PROCESS.md](PROCESS.md) acompanha uma consulta deste catálogo do início ao fim.
