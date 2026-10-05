@@ -90,7 +90,7 @@ O catálogo é um arquivo JSON que descreve o que buscar e por quê. Exemplo mí
 
 | Campo | Significado |
 | --- | --- |
-| `filters.pushedSince` | Recorte por atividade: só entram repositórios com push nessa data ou depois. |
+| `filters.pushedSince` | Recorte por atividade: só entram repositórios cujo **último push** ao GitHub ocorreu nessa data ou depois, até o momento da coleta. Veja [O que conta como atividade](#o-que-conta-como-atividade). |
 | `id` | Identificador único e estável da consulta. |
 | `strategy` | Procedimento de descoberta: `terminology` (termos que nomeiam o fenômeno), `technology` (tecnologias ou artefatos associados a ele) ou `broader` (termos amplos ou adjacentes, para reduzir viés de terminologia). |
 | `endpoint` | `repositories` (nome, descrição, README e tópicos) ou `code` (conteúdo de arquivos). |
@@ -99,6 +99,15 @@ O catálogo é um arquivo JSON que descreve o que buscar e por quê. Exemplo mí
 | `partition` | Opcional. `{"by": "created", "from": "AAAA-MM-01", "interval": "month" \| "quarter" \| "year"}` para `repositories`, ou `{"by": "size", "bounds": [0, …]}` para `code`. |
 
 A API de busca devolve no máximo 1.000 resultados por consulta. A partição divide uma consulta grande em subconsultas menores, para que nenhum resultado seja perdido pelo corte do GitHub. Para mudar o catálogo, crie uma rodada nova; uma rodada sempre usa o catálogo gravado quando foi criada.
+
+### O que conta como atividade
+
+O recorte compara a data do **último push** do repositório (`pushed_at`, informada pelo GitHub) com `pushedSince`. Com `pushedSince: 2024-01-01`, um repositório entra quando recebeu algum push entre 01/01/2024 e o momento em que a ferramenta leu essa data. Na prática:
+
+- **Push não é commit.** O que conta é quando os commits chegaram ao GitHub, não a data registrada neles. Commits criados em 2023 e enviados em 2024 contam como atividade em 2024.
+- **Qualquer branch conta.** Um push em um branch que não é o principal também atualiza a data, mesmo que o branch principal esteja parado.
+- **"Até hoje" significa até a coleta.** A data é lida quando o repositório aparece na busca ou quando seus metadados são completados; a coluna `pushed_at_observed_at` registra esse momento. Pushes posteriores à rodada não alteram o resultado dela.
+- **Atividade recente não é implementação recente.** Um repositório cuja estrutura foi criada anos antes e que recebeu apenas um ajuste recente entra no recorte. Se o estudo precisar de commits recentes no branch principal, esse é outro critério, que a ferramenta não aplica hoje.
 
 ## Saídas
 
@@ -140,7 +149,7 @@ O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-front
 
 **Decisões do estudo:**
 
-- **Recorte por atividade** (`pushedSince: 2024-01-01`): prioriza repositórios ativos nos dois últimos anos, sem excluir projetos antigos que continuam mantidos.
+- **Recorte por atividade** (`pushedSince: 2024-01-01`): prioriza repositórios com algum push de 2024 até a data da coleta, sem excluir projetos antigos que continuam mantidos. O critério é o último push, não a data dos commits nem a data em que a arquitetura MFE foi introduzida (veja [O que conta como atividade](#o-que-conta-como-atividade)).
 - **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 11 e 17 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
 - **Termos com hífen entre aspas:** sem aspas, `single-spa` é lido como "single" e "spa" (356 mil resultados contra 6 mil com aspas).
 - **Consultas de tecnologia sobre artefatos** (`package.json`, configurações com `remotes`, `registerApplication`), e não sobre prosa, para encontrar repositórios que usam a tecnologia sem se descrever como MFE.
