@@ -3,11 +3,16 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
 import { catalogHash, parseCatalog } from '../discovery/catalog.js';
+import { createEnrichmentClient } from '../discovery/enrichment.js';
+import { expandCatalog } from '../discovery/expansion.js';
 import { createGitHubClient } from '../discovery/github.js';
+import type { HttpClientOptions } from '../discovery/http.js';
 import { exportRun } from '../discovery/report.js';
 import { runDiscovery } from '../discovery/runner.js';
 import type { DiscoveryStore } from '../discovery/storage.js';
 import type { Catalog } from '../discovery/types.js';
+
+const RESULT_CAP = 1000;
 
 export async function main(
   args: string[],
@@ -27,16 +32,22 @@ export async function main(
 
   program
     .command('discover')
-    .description('Search GitHub or resume an existing discovery run.')
+    .description('Search GitHub, resume an existing run, or preview totals.')
     .option('--queries <file>', 'query catalog JSON file')
     .option('--output <directory>', 'new run output directory')
     .option('--resume <directory>', 'resume an existing run directory')
+    .option(
+      '--dry-run',
+      'expand the catalog and print GitHub totals without creating a run',
+    )
     .action(async (options: DiscoverOptions) => {
       const command = parseDiscoverOptions(options);
       if (!env.GITHUB_TOKEN?.trim()) {
         throw new Error('GITHUB_TOKEN is required for discovery.');
       }
-      actionCode = await discover(command, env.GITHUB_TOKEN);
+      actionCode = command.dryRun
+        ? await dryRun(command.queries as string, env.GITHUB_TOKEN)
+        : await discover(command, env.GITHUB_TOKEN);
     });
 
   program
@@ -73,15 +84,18 @@ type DiscoverOptions = {
   queries?: string;
   output?: string;
   resume?: string;
+  dryRun?: boolean;
 };
 
-type DiscoverCommand = {
-  queries?: string;
-  output?: string;
-  resume?: string;
-};
-
-function parseDiscoverOptions(options: DiscoverOptions): DiscoverCommand {
+function parseDiscoverOptions(options: DiscoverOptions): DiscoverOptions {
+  if (options.dryRun) {
+    if (options.output || options.resume || !options.queries) {
+      throw new Error(
+        '--dry-run requires --queries and cannot be combined with --output or --resume.',
+      );
+    }
+    return options;
+  }
   if (options.resume && (options.queries || options.output)) {
     throw new Error('--resume cannot be combined with --queries or --output.');
   }
@@ -91,8 +105,69 @@ function parseDiscoverOptions(options: DiscoverOptions): DiscoverCommand {
   return options;
 }
 
+function readCatalog(path: string): Catalog {
+  return parseCatalog(JSON.parse(readFileSync(path, 'utf8')) as unknown);
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function clientOptions(token: string): HttpClientOptions {
+  return {
+    token,
+    fetchFn: globalThis.fetch,
+    now: Date.now,
+    sleep: sleepAbortably,
+  };
+}
+
+/** Runs work with a SIGINT-aware signal and redacts the token from any error. */
+async function withInterrupt<T>(
+  token: string,
+  work: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const abortOnSigint = () =>
+    controller.abort(new Error('Interrupted by SIGINT'));
+  process.once('SIGINT', abortOnSigint);
+  try {
+    return await work(controller.signal);
+  } catch (error) {
+    throw new Error(redactMessage(error, token));
+  } finally {
+    process.removeListener('SIGINT', abortOnSigint);
+  }
+}
+
+async function dryRun(queriesPath: string, token: string): Promise<number> {
+  const subqueries = expandCatalog(readCatalog(queriesPath), today());
+  const client = createGitHubClient(clientOptions(token));
+  return withInterrupt(token, async (signal) => {
+    console.log(
+      '| query_id | subquery_id | q_effective | total | incompleto | saturada |',
+    );
+    console.log('| --- | --- | --- | ---: | --- | --- |');
+    let saturated = 0;
+    let sum = 0;
+    for (const subquery of subqueries) {
+      const { totalCount, incomplete } = await client.count(subquery, signal);
+      const over = totalCount > RESULT_CAP;
+      if (over) saturated += 1;
+      sum += totalCount;
+      console.log(
+        `| ${subquery.queryId} | ${subquery.id} | ${escapeCell(subquery.q)} | ${totalCount} | ${incomplete ? 'sim' : 'não'} | ${over ? '**sim**' : ''} |`,
+      );
+    }
+    console.log(
+      `\nSubconsultas: ${subqueries.length}. Saturadas: ${saturated}. Soma dos totais: ${sum}.`,
+    );
+    return saturated > 0 ? 2 : 0;
+  });
+}
+
 async function discover(
-  command: DiscoverCommand,
+  command: DiscoverOptions,
   token: string,
 ): Promise<number> {
   const outputDir = command.resume ?? (command.output as string);
@@ -103,43 +178,42 @@ async function discover(
   if (!command.resume && existsSync(databasePath)) {
     throw new Error('The output directory already contains discovery.sqlite.');
   }
+  const catalog = command.resume
+    ? null
+    : readCatalog(command.queries as string);
 
   let store: DiscoveryStore | undefined;
-  const controller = new AbortController();
-  const abortOnSigint = () =>
-    controller.abort(new Error('Interrupted by SIGINT'));
-  process.once('SIGINT', abortOnSigint);
   try {
-    const { openStore } = await import('../discovery/storage.js');
-    let catalog: Catalog;
-    if (command.resume) {
-      store = openStore(databasePath);
-      catalog = store.getCatalog();
-    } else {
-      const queryFile = readFileSync(command.queries as string, 'utf8');
-      catalog = parseCatalog(JSON.parse(queryFile) as unknown);
-      mkdirSync(outputDir, { recursive: true });
-      store = openStore(databasePath);
-      store.createRun(catalog, catalogHash(catalog), new Date().toISOString());
-    }
+    return await withInterrupt(token, async (signal) => {
+      const { openStore } = await import('../discovery/storage.js');
+      if (catalog) {
+        mkdirSync(outputDir, { recursive: true });
+        store = openStore(databasePath);
+        const startedAt = new Date().toISOString();
+        const expansionDate = startedAt.slice(0, 10);
+        store.createRun({
+          catalog,
+          hash: catalogHash(catalog),
+          startedAt,
+          expansionDate,
+          subqueries: expandCatalog(catalog, expansionDate),
+        });
+      } else {
+        store = openStore(databasePath);
+      }
 
-    const now = () => new Date().toISOString();
-    const client = createGitHubClient({
-      token,
-      fetchFn: globalThis.fetch,
-      now: Date.now,
-      sleep: sleepAbortably,
+      const options = clientOptions(token);
+      const result = await runDiscovery({
+        store,
+        client: createGitHubClient(options),
+        enrichmentClient: createEnrichmentClient(options),
+        signal,
+        now: () => new Date().toISOString(),
+      });
+      await exportRun(store, outputDir);
+      console.log(`Run ${result.run.id}: ${result.run.state}`);
+      return result.run.state === 'complete' ? 0 : 2;
     });
-    const result = await runDiscovery({
-      catalog,
-      store,
-      client,
-      signal: controller.signal,
-      now,
-    });
-    await exportRun(store, outputDir);
-    console.log(`Run ${result.run.id}: ${result.run.state}`);
-    return result.run.state === 'complete' ? 0 : 2;
   } catch (error) {
     if (store) {
       try {
@@ -148,11 +222,14 @@ async function discover(
         // Keep the original discovery or export error for the caller.
       }
     }
-    throw new Error(redactMessage(error, token));
+    throw error;
   } finally {
-    process.removeListener('SIGINT', abortOnSigint);
     store?.close();
   }
+}
+
+function escapeCell(text: string): string {
+  return text.replaceAll('|', '\\|');
 }
 
 function sleepAbortably(ms: number, signal: AbortSignal): Promise<void> {

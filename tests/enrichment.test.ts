@@ -126,9 +126,14 @@ describe('enrichment client', () => {
       throw new Error(`socket closed for ${TOKEN}`);
     });
 
-    const error = await client
+    const error = (await client
       .fetchRepositories(targets, new AbortController().signal)
-      .catch((caught: unknown) => caught as Error);
+      .then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (caught: unknown) => caught,
+      )) as Error;
 
     expect(error.message).not.toContain(TOKEN);
   });
