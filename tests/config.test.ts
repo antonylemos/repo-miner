@@ -6,7 +6,7 @@ import { expandCatalog } from '../src/discovery/expansion.js';
 const catalog = parseCatalog(
   JSON.parse(
     readFileSync(
-      new URL('../config/discovery.queries.json', import.meta.url),
+      new URL('../config/catalogs/micro-frontends.json', import.meta.url),
       'utf8',
     ),
   ),
