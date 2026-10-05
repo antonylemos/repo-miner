@@ -1,268 +1,278 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { catalogHash } from '../src/discovery/catalog.js';
 import { exportRun } from '../src/discovery/report.js';
-import { openStore } from '../src/discovery/storage.js';
-import type {
-  Catalog,
-  Query,
-  SearchHit,
-  SearchPage,
-} from '../src/discovery/types.js';
+import type { SearchHit, Subquery } from '../src/discovery/types.js';
+import {
+  catalogOf,
+  cleanupTestStores,
+  createTestStore,
+  hit,
+  page,
+  parseCsv,
+  query,
+} from './helpers.js';
 
-const dirs: string[] = [];
-const queryA: Query = {
-  id: 'query-a',
-  strategy: 'terminology',
-  endpoint: 'repositories',
-  q: 'microfrontend',
-};
-const queryB: Query = {
+const terminology = query({ id: 'query-a' });
+const technology = query({
   id: 'query-b',
   strategy: 'technology',
   endpoint: 'code',
-  q: 'single-spa',
-};
-const queryC: Query = {
-  id: 'query-c',
-  strategy: 'broader',
-  endpoint: 'repositories',
-  q: 'frontend composition',
-};
-const catalog: Catalog = { version: 1, queries: [queryA, queryB, queryC] };
-const stores: ReturnType<typeof openStore>[] = [];
-
-function createStore(runCatalog: Catalog = catalog) {
-  const dir = mkdtempSync(join(tmpdir(), 'discovery-report-'));
-  dirs.push(dir);
-  const store = openStore(join(dir, 'discovery.sqlite'));
-  stores.push(store);
-  store.createRun(runCatalog, catalogHash(runCatalog), 'started');
-  return { dir, store };
-}
-
-function hit(id: number, path: string | null = null): SearchHit {
-  return {
-    candidate: {
-      id,
-      fullName: `org/repo-${id}`,
-      url: `https://github.com/org/repo-${id}`,
-      metadata: { stars: 10 },
-    },
-    path,
-    url: path
-      ? `https://github.com/org/repo-${id}/blob/main/${path}`
-      : `https://github.com/org/repo-${id}`,
-  };
-}
-
-function savePage(
-  store: ReturnType<typeof openStore>,
-  query: Query,
-  hits: SearchHit[],
-  state: 'complete' | 'partial' | 'failed' | 'pending' = 'complete',
-  reason?: string,
-) {
-  const page: SearchPage = {
-    totalCount: hits.length,
-    incomplete: state === 'partial',
-    hits,
-    hasNext: false,
-  };
-  const checkpoint = {
-    queryId: query.id,
-    nextPage: state === 'complete' || state === 'partial' ? null : 1,
-    state,
-  } as const;
-  store.savePage(query, 1, page, checkpoint, 'fetched');
-  if (reason) store.markQuery(checkpoint, reason);
-}
-
-afterEach(() => {
-  for (const store of stores.splice(0)) store.close();
-  for (const dir of dirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  q: 'single-spa filename:package.json',
+  partition: { by: 'size', bounds: [0, 1000] },
 });
+const broader = query({ id: 'query-c', strategy: 'broader' });
+const catalog = catalogOf([terminology, technology, broader]);
+
+afterEach(cleanupTestStores);
+
+function setup() {
+  const context = createTestStore(catalog);
+  const byId = new Map(context.subqueries.map((s) => [s.id, s]));
+  const save = (
+    id: string,
+    hits: SearchHit[],
+    state: 'complete' | 'partial' = 'complete',
+    reason?: string,
+  ) => {
+    const subquery = byId.get(id) as Subquery;
+    const checkpoint = { subqueryId: id, nextPage: null, state } as const;
+    context.store.savePage(
+      subquery,
+      1,
+      page(hits),
+      checkpoint,
+      `fetched-${id}`,
+    );
+    if (reason) context.store.markSubquery(checkpoint, reason);
+  };
+  return { ...context, save };
+}
+
+function readCsv(dir: string, name: string) {
+  const [header, ...rows] = parseCsv(readFileSync(join(dir, name), 'utf8'));
+  return rows.map((row) =>
+    Object.fromEntries(header.map((column, index) => [column, row[index]])),
+  );
+}
 
 describe('exportRun', () => {
-  it('should export each candidate once', async () => {
-    const { dir, store } = createStore();
-    savePage(store, queryA, [hit(1), hit(2)]);
-    savePage(store, queryB, [hit(1)]);
+  it('should export each candidate once with scope and discovering strategies', async () => {
+    const { directory, store, save } = setup();
+    save('query-a', [
+      hit(1),
+      hit(2, { metadata: { pushed_at: '2023-06-01T00:00:00Z' } }),
+    ]);
+    save('query-b#size:0..999', [
+      hit(1, { path: 'package.json' }),
+      hit(3, { path: 'package.json', metadata: { fork: false } }),
+      hit(4, { path: 'package.json', metadata: { fork: false } }),
+    ]);
+    store.queueEnrichment();
+    store.saveEnrichments(
+      [
+        {
+          repositoryId: 3,
+          status: 'ok',
+          data: { pushedAt: '2025-03-01T00:00:00Z' },
+          reason: null,
+        },
+      ],
+      'enriched-at',
+    );
 
-    await exportRun(store, dir);
+    await exportRun(store, directory);
 
-    const rows = readFileSync(join(dir, 'candidates.csv'), 'utf8')
-      .trim()
-      .split('\n');
-    expect(rows).toHaveLength(3);
-    expect(rows[1]).toContain('1,org/repo-1');
-    expect(rows[2]).toContain('2,org/repo-2');
+    const rows = readCsv(directory, 'candidates.csv');
+    expect(
+      rows.map((row) => [
+        row.id,
+        row.scope,
+        row.pushed_at_source,
+        row.enrichment_status,
+        row.strategies,
+      ]),
+    ).toEqual([
+      ['1', 'in_scope', 'search', '', 'terminology;technology'],
+      ['2', 'out_of_scope_temporal', 'search', '', 'terminology'],
+      ['3', 'in_scope', 'enrichment', 'ok', 'technology'],
+      ['4', 'unknown', '', 'pending', 'technology'],
+    ]);
+    expect(JSON.parse(rows[2].enrichment_json)).toEqual({
+      pushedAt: '2025-03-01T00:00:00Z',
+    });
   });
 
-  it('should retain every query and code path in the hit export', async () => {
-    const { dir, store } = createStore();
-    savePage(store, queryA, [hit(1)]);
-    savePage(store, queryB, [hit(1, 'src/one.ts'), hit(1, 'src/two.ts')]);
+  it('should export the provenance fields of every hit', async () => {
+    const { directory, store, save } = setup();
+    save('query-b#size:0..999', [
+      hit(1, { path: 'src/one.ts' }),
+      hit(1, { path: 'src/two.ts' }),
+    ]);
 
-    await exportRun(store, dir);
+    await exportRun(store, directory);
 
-    const csv = readFileSync(join(dir, 'discovery-hits.csv'), 'utf8');
-    const rows = csv.trim().split('\n');
-    expect(rows).toHaveLength(4);
-    expect(csv).toContain('query-a,terminology,1');
-    expect(csv).toContain('query-b,technology,1');
-    expect(csv).toContain('src/one.ts');
-    expect(csv).toContain('src/two.ts');
+    const rows = readCsv(directory, 'discovery-hits.csv');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      query_id: 'query-b',
+      subquery_id: 'query-b#size:0..999',
+      strategy: 'technology',
+      endpoint: 'code',
+      q_effective: 'single-spa filename:package.json size:0..999',
+      fetched_at: 'fetched-query-b#size:0..999',
+      candidate_id: '1',
+      path: 'src/one.ts',
+    });
   });
 
   it('should escape commas quotes Unicode and line breaks in CSV fields', async () => {
-    const { dir, store } = createStore();
-    const ordinaryHit = hit(3, 'src/ação,"component"\nnext.ts');
-    const specialHit: SearchHit = {
-      ...ordinaryHit,
-      candidate: {
-        ...ordinaryHit.candidate,
-        fullName: 'org/ação,"repo"\nnext-line',
-      },
-    };
-    savePage(store, queryB, [specialHit]);
+    const { directory, store, save } = setup();
+    const special = hit(3, { path: 'src/ação,"component"\nnext.ts' });
+    special.candidate.fullName = 'org/ação,"repo"\nnext-line';
+    save('query-b#size:0..999', [special]);
 
-    await exportRun(store, dir);
+    await exportRun(store, directory);
 
-    const candidatesCsv = readFileSync(join(dir, 'candidates.csv'), 'utf8');
-    const hitsCsv = readFileSync(join(dir, 'discovery-hits.csv'), 'utf8');
-    expect(candidatesCsv).toContain('"org/ação,""repo""\nnext-line"');
-    expect(hitsCsv).toContain('"src/ação,""component""\nnext.ts"');
+    expect(readFileSync(join(directory, 'candidates.csv'), 'utf8')).toContain(
+      '"org/ação,""repo""\nnext-line"',
+    );
+    expect(readCsv(directory, 'discovery-hits.csv')[0].path).toBe(
+      'src/ação,"component"\nnext.ts',
+    );
   });
 
-  it('should order candidates queries and paths deterministically', async () => {
-    const uppercaseQuery: Query = { ...queryA, id: 'B' };
-    const lowercaseQuery: Query = { ...queryB, id: 'a' };
-    const orderedCatalog: Catalog = {
-      version: 1,
-      queries: [lowercaseQuery, uppercaseQuery],
-    };
-    const { dir, store } = createStore(orderedCatalog);
-    savePage(store, lowercaseQuery, [hit(1, 'z.ts'), hit(2, 'z.ts')]);
-    savePage(store, uppercaseQuery, [
-      hit(1, 'z.ts'),
-      hit(1, 'a.ts'),
-      hit(2, 'a.ts'),
-    ]);
+  it('should compute exclusive, pairwise and triple intersections over in-scope candidates', async () => {
+    const { directory, store, save } = setup();
+    const old = { metadata: { pushed_at: '2020-01-01T00:00:00Z' } };
+    save('query-a', [hit(1), hit(2), hit(3), hit(9, old)]);
+    save('query-b#size:0..999', [hit(1, { path: 'p' }), hit(2, { path: 'p' })]);
+    save('query-c', [hit(1), hit(9, old)]);
 
-    await exportRun(store, dir);
+    await exportRun(store, directory);
 
-    const rows = readFileSync(join(dir, 'discovery-hits.csv'), 'utf8')
-      .trim()
-      .split('\n')
-      .slice(1)
-      .map((row) => {
-        const fields = row.split(',');
-        return `${fields[2]}:${fields[0]}:${fields[5]}`;
-      });
-    expect(rows).toEqual([
-      '1:B:a.ts',
-      '1:B:z.ts',
-      '1:a:z.ts',
-      '2:B:a.ts',
-      '2:a:z.ts',
-    ]);
+    const coverage = JSON.parse(
+      readFileSync(join(directory, 'coverage.json'), 'utf8'),
+    );
+    expect(coverage.intersections).toEqual({
+      exclusive: { terminology: 1, technology: 0, broader: 0 },
+      pairs: [
+        { left: 'terminology', right: 'technology', count: 2 },
+        { left: 'terminology', right: 'broader', count: 1 },
+        { left: 'technology', right: 'broader', count: 1 },
+      ],
+      all: 1,
+    });
+    expect(coverage.byScope).toEqual({
+      in_scope: 3,
+      out_of_scope_temporal: 1,
+      unknown: 0,
+    });
+    expect(coverage.byStrategy.inScope).toEqual({
+      terminology: 3,
+      technology: 2,
+      broader: 1,
+    });
+    expect(coverage.byStrategy.all.broader).toBe(2);
+    const report = readFileSync(join(directory, 'report.md'), 'utf8');
+    expect(report).toContain('- somente terminology: 1');
+    expect(report).toContain('- terminology ∩ technology: 2 repositórios');
+    expect(report).toContain(
+      '- terminology ∩ technology ∩ broader: 1 repositórios',
+    );
   });
 
-  it('should report hit and candidate counts with partial failed and pending queries', async () => {
-    const { dir, store } = createStore();
-    savePage(store, queryA, [hit(1)], 'partial', 'result cap reached');
-    savePage(store, queryB, [hit(1, 'src/app.ts')], 'pending');
-    store.markQuery(
-      { queryId: queryC.id, nextPage: 1, state: 'failed' },
+  it('should aggregate coverage by source query and list saturated subqueries', async () => {
+    const { directory, store, save } = setup();
+    save(
+      'query-b#size:0..999',
+      [hit(1, { path: 'p' })],
+      'partial',
+      'result cap reached',
+    );
+    save('query-b#size:>=1000', [hit(2, { path: 'p' })]);
+    store.markSubquery(
+      { subqueryId: 'query-c', nextPage: 1, state: 'failed' },
       'temporary error',
     );
 
-    await exportRun(store, dir);
+    await exportRun(store, directory);
 
-    const report = readFileSync(join(dir, 'report.md'), 'utf8');
     const coverage = JSON.parse(
-      readFileSync(join(dir, 'coverage.json'), 'utf8'),
-    ) as {
-      coverage: Array<{
-        queryId: string;
-        fetchedHits: number;
-        uniqueCandidates: number;
-        state: string;
-      }>;
-    };
-    expect(coverage.coverage).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ queryId: 'query-a', state: 'partial' }),
-        expect.objectContaining({ queryId: 'query-b', state: 'pending' }),
-        expect.objectContaining({ queryId: 'query-c', state: 'failed' }),
-      ]),
+      readFileSync(join(directory, 'coverage.json'), 'utf8'),
     );
-    expect(coverage.coverage[0]).toMatchObject({
-      fetchedHits: 1,
-      uniqueCandidates: 1,
+    expect(
+      coverage.queries.find(
+        (q: { queryId: string }) => q.queryId === 'query-b',
+      ),
+    ).toMatchObject({
+      subqueries: 2,
+      complete: 1,
+      partial: 1,
+      failed: 0,
+      pending: 0,
+      hits: 2,
+      uniqueCandidates: 2,
     });
-    expect(report).toContain('query-a');
-    expect(report).toContain('query-b');
-    expect(report).toContain('query-c');
-    expect(report).toContain('result cap reached');
-    expect(report).toContain('terminology ∩ technology: 1 repositórios');
-    expect(report).toContain('query-a: revisar ou reformular a consulta.');
+    expect(coverage.subqueries).toHaveLength(4);
+    const report = readFileSync(join(directory, 'report.md'), 'utf8');
+    expect(report).toContain(
+      '| query-b#size:0..999 | partial | result cap reached |',
+    );
+    expect(report).toContain('| query-c | failed | temporary error |');
+    expect(report).toContain('Recorte temporal: pushed >= 2024-01-01');
   });
 
-  it('should state that confirmed approach counts are unavailable', async () => {
-    const { dir, store } = createStore();
+  it('should report enrichment status, limitations and the absence of confirmed implementations', async () => {
+    const { directory, store, save } = setup();
+    save('query-b#size:0..999', [hit(5, { path: 'p', metadata: {} })]);
+    store.queueEnrichment();
+    store.saveEnrichments(
+      [{ repositoryId: 5, status: 'not_found', data: null, reason: 'gone' }],
+      't',
+    );
 
-    await exportRun(store, dir);
+    await exportRun(store, directory);
 
-    const report = readFileSync(join(dir, 'report.md'), 'utf8');
+    const report = readFileSync(join(directory, 'report.md'), 'utf8');
+    expect(report).toContain('| not_found | 1 |');
+    expect(report).toContain('forks');
+    expect(report).toContain('384 KB');
+    expect(report).toContain('Web Components');
     expect(report).toContain(
       'Contagens de implementações confirmadas não estão disponíveis',
     );
   });
 
-  it('should record run versions and hashes of every exported data file', async () => {
-    const { dir, store } = createStore();
+  it('should record run parameters, git state and hashes of every exported file', async () => {
+    const { directory, store } = setup();
 
-    const result = await exportRun(store, dir);
+    const result = await exportRun(store, directory);
 
     const manifest = JSON.parse(
-      readFileSync(join(dir, 'manifest.json'), 'utf8'),
-    ) as {
-      schemaVersion: number;
-      run: { id: string; catalogHash: string; startedAt: string };
-      versions: {
-        node: string;
-        code: string | null;
-        lockfileVersion: string | null;
-        lockfileSha256: string | null;
-      };
-      git: { available: boolean; revision: string | null; reason?: string };
-      sha256: Record<string, string>;
-    };
-    expect(manifest.schemaVersion).toBe(1);
+      readFileSync(join(directory, 'manifest.json'), 'utf8'),
+    );
+    expect(manifest.schemaVersion).toBe(2);
     expect(manifest.run).toMatchObject({
       id: store.getRun().id,
       catalogHash: store.getRun().catalogHash,
-      startedAt: 'started',
+      pushedSince: '2024-01-01',
+      expansionDate: '2026-10-05',
     });
     expect(manifest.versions.node).toBe(process.version);
-    expect(manifest.versions.code).toBeTruthy();
     expect(manifest.versions.lockfileVersion).toBe('9.0');
-    expect(typeof manifest.git.available).toBe('boolean');
-    if (!manifest.git.available) expect(manifest.git.reason).toBeTruthy();
+    if (manifest.git.available) {
+      expect(typeof manifest.git.dirty).toBe('boolean');
+    } else {
+      expect(manifest.git.reason).toBeTruthy();
+    }
     for (const file of result.files) {
       if (file.endsWith('manifest.json')) continue;
       const name = file.split('/').at(-1) as string;
-      const expectedHash = createHash('sha256')
-        .update(readFileSync(file))
-        .digest('hex');
-      expect(manifest.sha256[name]).toBe(expectedHash);
+      expect(manifest.sha256[name]).toBe(
+        createHash('sha256').update(readFileSync(file)).digest('hex'),
+      );
     }
   });
 });
