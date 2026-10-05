@@ -1,137 +1,306 @@
 {
-  "version": 1,
+  "version": 2,
+  "filters": { "pushedSince": "2024-01-01" },
   "queries": [
+    {
+      "id": "terminology-topic-microfrontend",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "topic:microfrontend",
+      "rationale": "Tópico explícito MFE atribuído pelos mantenedores (§3.1, procedimento 1)."
+    },
+    {
+      "id": "terminology-topic-microfrontends",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "topic:microfrontends",
+      "rationale": "Tópico explícito MFE atribuído pelos mantenedores (§3.1, procedimento 1)."
+    },
+    {
+      "id": "terminology-topic-micro-frontend",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "topic:micro-frontend",
+      "rationale": "Tópico explícito MFE atribuído pelos mantenedores (§3.1, procedimento 1)."
+    },
+    {
+      "id": "terminology-topic-micro-frontends",
+      "strategy": "terminology",
+      "endpoint": "repositories",
+      "q": "topic:micro-frontends",
+      "rationale": "Tópico explícito MFE atribuído pelos mantenedores (§3.1, procedimento 1)."
+    },
     {
       "id": "terminology-microfrontend-repositories",
       "strategy": "terminology",
       "endpoint": "repositories",
-      "q": "microfrontend in:name,description,readme"
+      "q": "microfrontend in:name,description,readme",
+      "rationale": "Termo explícito MFE em metadados e documentação (§3.1, procedimento 1).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "month"
+      }
     },
     {
-      "id": "terminology-microfrontend-code",
+      "id": "terminology-microfrontends-repositories",
       "strategy": "terminology",
-      "endpoint": "code",
-      "q": "microfrontend in:file"
+      "endpoint": "repositories",
+      "q": "microfrontends in:name,description,readme",
+      "rationale": "Termo explícito MFE em metadados e documentação (§3.1, procedimento 1).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "month"
+      }
     },
     {
       "id": "terminology-micro-frontend-repositories",
       "strategy": "terminology",
       "endpoint": "repositories",
-      "q": "micro-frontend in:name,description,readme"
+      "q": "\"micro frontend\" in:name,description,readme",
+      "rationale": "Termo explícito MFE; equivale a \"micro-frontend\" na busca do GitHub (§3.1, procedimento 1).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "month"
+      }
     },
     {
-      "id": "terminology-micro-frontend-code",
-      "strategy": "terminology",
-      "endpoint": "code",
-      "q": "micro-frontend in:file"
-    },
-    {
-      "id": "terminology-quoted-micro-frontend-repositories",
-      "strategy": "terminology",
-      "endpoint": "repositories",
-      "q": "\"micro frontend\" in:name,description,readme"
-    },
-    {
-      "id": "terminology-quoted-micro-frontend-code",
-      "strategy": "terminology",
-      "endpoint": "code",
-      "q": "\"micro frontend\" in:file"
-    },
-    {
-      "id": "terminology-quoted-micro-frontends-repositories",
+      "id": "terminology-micro-frontends-repositories",
       "strategy": "terminology",
       "endpoint": "repositories",
-      "q": "\"micro frontends\" in:name,description,readme"
+      "q": "\"micro frontends\" in:name,description,readme",
+      "rationale": "Termo explícito MFE; equivale a \"micro-frontends\" na busca do GitHub (§3.1, procedimento 1).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "month"
+      }
     },
     {
-      "id": "terminology-quoted-micro-frontends-code",
-      "strategy": "terminology",
-      "endpoint": "code",
-      "q": "\"micro frontends\" in:file"
+      "id": "technology-topic-module-federation",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "topic:module-federation",
+      "rationale": "Tópico de tecnologia de composição, independente do termo MFE (§3.1, procedimento 2)."
+    },
+    {
+      "id": "technology-topic-single-spa",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "topic:single-spa",
+      "rationale": "Tópico de tecnologia de composição, independente do termo MFE (§3.1, procedimento 2)."
+    },
+    {
+      "id": "technology-topic-qiankun",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "topic:qiankun",
+      "rationale": "Tópico de framework MFE adicional admitido pelo protocolo (§3.1, \"among others\")."
     },
     {
       "id": "technology-module-federation-repositories",
       "strategy": "technology",
       "endpoint": "repositories",
-      "q": "\"Module Federation\" in:name,description,readme"
-    },
-    {
-      "id": "technology-module-federation-code",
-      "strategy": "technology",
-      "endpoint": "code",
-      "q": "\"Module Federation\" in:file"
+      "q": "\"module federation\" in:name,description,readme",
+      "rationale": "Menção à tecnologia em metadados e documentação (§3.1, procedimento 2).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "month"
+      }
     },
     {
       "id": "technology-single-spa-repositories",
       "strategy": "technology",
       "endpoint": "repositories",
-      "q": "single-spa in:name,description,readme"
+      "q": "\"single-spa\" in:name,description,readme",
+      "rationale": "Menção à tecnologia; com aspas para evitar a separação do hífen (§3.1, procedimento 2).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "quarter"
+      }
     },
     {
-      "id": "technology-single-spa-code",
+      "id": "technology-web-components-mfe-repositories",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "\"web components\" \"micro frontends\" in:readme",
+      "rationale": "Web Components não tem artefato discriminante; exige coocorrência com o termo MFE para excluir bibliotecas de componentes."
+    },
+    {
+      "id": "technology-module-federation-package-code",
       "strategy": "technology",
       "endpoint": "code",
-      "q": "single-spa in:file"
+      "q": "\"@module-federation\" filename:package.json",
+      "rationale": "Dependência declarada de Module Federation, independente da terminologia (§3.1, procedimento 2).",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
     },
     {
-      "id": "technology-web-components-repositories",
+      "id": "technology-vite-federation-package-code",
       "strategy": "technology",
-      "endpoint": "repositories",
-      "q": "\"Web Components\" in:name,description,readme"
+      "endpoint": "code",
+      "q": "\"@originjs/vite-plugin-federation\" filename:package.json",
+      "rationale": "Dependência de federação de módulos para Vite (§3.1, procedimento 2).",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
     },
     {
-      "id": "technology-web-components-code",
+      "id": "technology-angular-module-federation-package-code",
       "strategy": "technology",
       "endpoint": "code",
-      "q": "\"Web Components\" in:file"
+      "q": "\"@angular-architects/module-federation\" filename:package.json",
+      "rationale": "Dependência de Module Federation para Angular (§3.1, procedimento 2).",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
     },
     {
-      "id": "broader-frontend-composition-repositories",
+      "id": "technology-native-federation-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"@angular-architects/native-federation\" filename:package.json",
+      "rationale": "Dependência de Native Federation, abordagem adicional admitida pelo protocolo."
+    },
+    {
+      "id": "technology-single-spa-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"single-spa\" filename:package.json",
+      "rationale": "Dependência declarada de single-spa (§3.1, procedimento 2).",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
+    },
+    {
+      "id": "technology-qiankun-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"qiankun\" filename:package.json",
+      "rationale": "Dependência de qiankun, framework MFE adicional (§3.1, \"among others\").",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
+    },
+    {
+      "id": "technology-micro-app-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"@micro-zoe/micro-app\" filename:package.json",
+      "rationale": "Dependência de micro-app, framework MFE adicional (§3.1, \"among others\")."
+    },
+    {
+      "id": "technology-wujie-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"wujie\" filename:package.json",
+      "rationale": "Dependência de wujie, framework MFE adicional (§3.1, \"among others\")."
+    },
+    {
+      "id": "technology-piral-package-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "\"piral\" filename:package.json",
+      "rationale": "Dependência de Piral, framework MFE adicional (§3.1, \"among others\").",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
+    },
+    {
+      "id": "technology-module-federation-plugin-js-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "ModuleFederationPlugin remotes extension:js",
+      "rationale": "Configuração com remotes declarados: evidência de composição, não só de dependência.",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
+    },
+    {
+      "id": "technology-module-federation-plugin-ts-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "ModuleFederationPlugin remotes extension:ts",
+      "rationale": "Configuração com remotes declarados em TypeScript.",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
+    },
+    {
+      "id": "technology-single-spa-register-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "registerApplication singleSpa",
+      "rationale": "Registro de aplicações single-spa: evidência de composição.",
+      "partition": {
+        "by": "size",
+        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+      }
+    },
+    {
+      "id": "technology-custom-elements-single-spa-code",
+      "strategy": "technology",
+      "endpoint": "code",
+      "q": "customElements.define registerApplication",
+      "rationale": "Custom elements registrados como aplicações: possível híbrido Web Components e single-spa."
+    },
+    {
+      "id": "broader-frontend-composition",
       "strategy": "broader",
       "endpoint": "repositories",
-      "q": "\"frontend composition\" in:name,description,readme"
+      "q": "\"frontend composition\" in:name,description,readme",
+      "rationale": "Termo amplo de composição de frontend (§3.1, procedimento 3)."
     },
     {
-      "id": "broader-frontend-composition-code",
-      "strategy": "broader",
-      "endpoint": "code",
-      "q": "\"frontend composition\" in:file"
-    },
-    {
-      "id": "broader-frontend-decomposition-repositories",
+      "id": "broader-frontend-decomposition",
       "strategy": "broader",
       "endpoint": "repositories",
-      "q": "\"frontend decomposition\" in:name,description,readme"
+      "q": "\"frontend decomposition\" in:name,description,readme",
+      "rationale": "Termo amplo de decomposição de frontend (§3.1, procedimento 3)."
     },
     {
-      "id": "broader-frontend-decomposition-code",
-      "strategy": "broader",
-      "endpoint": "code",
-      "q": "\"frontend decomposition\" in:file"
-    },
-    {
-      "id": "broader-frontend-orchestration-repositories",
+      "id": "broader-frontend-orchestration",
       "strategy": "broader",
       "endpoint": "repositories",
-      "q": "\"frontend orchestration\" in:name,description,readme"
+      "q": "\"frontend orchestration\" in:name,description,readme",
+      "rationale": "Termo amplo de orquestração de frontend (§3.1, procedimento 3).",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "quarter"
+      }
     },
     {
-      "id": "broader-frontend-orchestration-code",
-      "strategy": "broader",
-      "endpoint": "code",
-      "q": "\"frontend orchestration\" in:file"
-    },
-    {
-      "id": "broader-federated-modules-repositories",
+      "id": "broader-federated-modules",
       "strategy": "broader",
       "endpoint": "repositories",
-      "q": "\"federated modules\" in:name,description,readme"
+      "q": "\"federated modules\" in:name,description,readme",
+      "rationale": "Termo amplo de módulos federados (§3.1, procedimento 3)."
     },
     {
-      "id": "broader-federated-modules-code",
+      "id": "broader-micro-apps",
       "strategy": "broader",
-      "endpoint": "code",
-      "q": "\"federated modules\" in:file"
+      "endpoint": "repositories",
+      "q": "\"micro apps\" frontend in:name,description,readme",
+      "rationale": "Micro-aplicações de frontend, termo associado citado no §3.4.7.",
+      "partition": {
+        "by": "created",
+        "from": "2019-01-01",
+        "interval": "quarter"
+      }
     }
   ]
 }
