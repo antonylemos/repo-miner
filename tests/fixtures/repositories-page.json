@@ -1,0 +1,17 @@
+{
+  "total_count": 1,
+  "incomplete_results": false,
+  "items": [
+    {
+      "id": 701,
+      "name": "shell",
+      "full_name": "example/shell",
+      "html_url": "https://github.com/example/shell",
+      "description": "Repository fixture",
+      "stargazers_count": 12,
+      "fork": true,
+      "archived": false,
+      "private": false
+    }
+  ]
+}

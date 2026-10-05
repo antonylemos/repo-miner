@@ -1,0 +1,23 @@
+{
+  "total_count": 1,
+  "incomplete_results": true,
+  "items": [
+    {
+      "name": "root-config.ts",
+      "path": "apps/shell/root-config.ts",
+      "sha": "abc123",
+      "url": "https://api.github.com/repositories/702/contents/apps/shell/root-config.ts",
+      "html_url": "https://github.com/example/host/blob/main/apps/shell/root-config.ts",
+      "repository": {
+        "id": 702,
+        "name": "host",
+        "full_name": "example/host",
+        "html_url": "https://github.com/example/host",
+        "stargazers_count": 4,
+        "fork": false,
+        "archived": false,
+        "private": false
+      }
+    }
+  ]
+}
