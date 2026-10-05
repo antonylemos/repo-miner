@@ -20,7 +20,7 @@ export async function main(
 ): Promise<number> {
   let actionCode = 0;
   const program = new Command()
-    .name('repo-discovery')
+    .name('repo-miner')
     .description('Discover GitHub repositories from a query catalog.')
     .helpOption('-h, --help', 'display help for command')
     .exitOverride()
@@ -69,7 +69,7 @@ export async function main(
     });
 
   try {
-    await program.parseAsync(['node', 'repo-discovery', ...args]);
+    await program.parseAsync(['node', 'repo-miner', ...args]);
     return actionCode;
   } catch (error) {
     if (error instanceof CommanderError) {

@@ -128,7 +128,7 @@ async function fetchWithTimeout(
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${options.token}`,
       'X-GitHub-Api-Version': API_VERSION,
-      'User-Agent': 'repo-discovery/0.1.0',
+      'User-Agent': 'repo-miner/0.1.0',
     };
     if (request.body !== undefined)
       headers['Content-Type'] = 'application/json';

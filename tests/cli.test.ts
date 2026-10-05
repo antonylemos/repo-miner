@@ -103,6 +103,9 @@ describe('discovery CLI', () => {
 
     expect(await main(['discover', '--help'], {})).toBe(0);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('--dry-run'));
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('Usage: repo-miner discover'),
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 
