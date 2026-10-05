@@ -74,25 +74,25 @@ A CLI expande cada consulta em subconsultas com `pushed:>=`, `created:` e `size:
 
 O diretório da rodada contém `discovery.sqlite`, que guarda páginas, candidatos, hits, checkpoints e proveniência. A CLI exporta:
 
-- `candidates.csv`: um registro por id de repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at` e sua fonte, status de enriquecimento e estratégias que o encontraram;
+- `candidates.csv`: um registro por id de repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at`, sua fonte e a data em que esse `pushed_at` foi observado (`pushed_at_observed_at`), status de enriquecimento e estratégias que o encontraram;
 - `discovery-hits.csv`: todas as origens, com consulta, subconsulta, `q` efetivo, endpoint, data de coleta e caminho;
-- `coverage.json`: cobertura por consulta, estratégia e contagens de hits e repositórios distintos;
-- `report.md`: diagnóstico narrativo, contagens, interseções, consultas saturadas e limitações;
-- `manifest.json`: id, datas e hash do catálogo da rodada, versões disponíveis e SHA-256 dos arquivos exportados.
+- `coverage.json`: cobertura por consulta e por subconsulta, contagens por `scope`, contagens por estratégia (`in_scope` e todas), interseções entre estratégias e status do enriquecimento;
+- `report.md`: diagnóstico narrativo, contagens, interseções, subconsultas saturadas e limitações;
+- `manifest.json`: id, datas, recorte temporal (`pushedSince`), data de expansão (`expansionDate`) e hash do catálogo da rodada, versões disponíveis, revisão e estado da árvore git (`git.dirty`) e SHA-256 dos arquivos exportados.
 
 Os arquivos CSV preservam Unicode e escapam vírgulas, aspas e quebras de linha conforme as regras CSV. Metadados de busca ficam na coluna `metadata_json`.
 
 ## Códigos de saída
 
-- `0`: todas as consultas terminaram sem sinalização de cobertura parcial;
-- `1`: erro fatal, como argumentos inválidos, credencial ausente ou banco inexistente;
-- `2`: rodada parcial, incluindo consultas incompletas, saturadas, falhas recuperáveis ou interrupção.
+- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou descoberta em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ficou `pending` ou `failed`;
+- `1`: erro fatal, como opções inválidas, catálogo inválido, credencial ausente para descoberta, diretório ou banco inexistente ou conflitante, banco de versão anterior não suportado, ou falha na requisição do dry-run;
+- `2`: rodada parcial, incluindo subconsulta saturada, incompleta ou com falha recuperável, enriquecimento `pending` ou `failed`, interrupção, ou dry-run com alguma subconsulta acima de 1.000 resultados.
 
-Uma rodada parcial conserva as páginas confirmadas e os checkpoints para retomada. Uma consulta marcada como parcial por incompletude ou limite de resultados é terminal nessa rodada; revise o catálogo e crie outra rodada para refazer a busca.
+Uma rodada parcial conserva as páginas confirmadas e os checkpoints para retomada. Uma subconsulta marcada como parcial por incompletude ou limite de resultados é terminal nessa rodada; revise o catálogo e crie outra rodada para refazer a busca.
 
 ## Limitações
 
-A API de busca do GitHub depende da indexação do serviço. Os resultados podem mudar durante a rodada, ser incompletos e estar sujeitos ao limite de resultados por consulta. O executor busca no máximo dez páginas por consulta e registra buscas saturadas para revisão. Os totais descrevem os resultados destas consultas, não a população de repositórios.
+A API de busca do GitHub depende da indexação do serviço. Os resultados podem mudar durante a rodada, ser incompletos e estar sujeitos ao limite de resultados por subconsulta. O executor busca no máximo dez páginas por subconsulta e registra buscas saturadas para revisão. Os totais descrevem os resultados destas consultas, não a população de repositórios.
 
 As contagens não são prevalência de micro-frontends nem contagens de implementações confirmadas. Classificação arquitetural, tipo de projeto e elegibilidade ficam para triagem humana posterior. O armazenamento usa `node:sqlite`, integrado à versão de Node fixada no projeto.
 

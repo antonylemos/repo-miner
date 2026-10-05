@@ -17,7 +17,7 @@ O caminho principal passa pela CLI em `src/cli/main.ts` e pelos módulos do dire
 5. **Busca no GitHub:** `github.ts` consulta a busca REST por subconsulta; `http.ts` aplica a política comum (2 s para repositórios, 6 s para código, 1 s para GraphQL, timeout de 30 s, até três tentativas e espera conforme os limites de taxa).
 6. **Paginação e checkpoints:** `runner.ts` percorre até dez páginas por subconsulta, salvando cada página e seu checkpoint numa transação. Subconsultas saturadas ou incompletas ficam `partial`; erros recuperáveis ficam `failed`.
 7. **Enriquecimento e recorte:** candidatos sem `pushed_at` são enriquecidos por `enrichment.ts` em lotes de 100 pela API GraphQL; `scope.ts` classifica cada candidato pelo recorte temporal.
-8. **Encerramento:** uma rodada em que todas as consultas terminaram completamente retorna `0`. Uma rodada incompleta ou parcial retorna `2`. Erros fatais da CLI retornam `1`. Um sinal SIGINT interrompe a busca atual de forma abortável; páginas já confirmadas permanecem disponíveis para retomada.
+8. **Encerramento:** uma rodada em que todas as subconsultas terminaram completamente e nenhum enriquecimento ficou pendente ou com falha retorna `0`. Uma rodada incompleta ou parcial retorna `2`. Erros fatais da CLI retornam `1`. Um sinal SIGINT interrompe a busca atual de forma abortável; páginas já confirmadas permanecem disponíveis para retomada.
 
 ## Estrutura principal
 
@@ -119,7 +119,7 @@ Todos são gravados no diretório da rodada:
 | Arquivo | Conteúdo |
 | --- | --- |
 | `discovery.sqlite` | Catálogo persistido, subconsultas, páginas, candidatos, hits, enriquecimentos e checkpoints por subconsulta; é a fonte usada para retomada e nova exportação. |
-| `candidates.csv` | Um registro por id de repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at` e sua fonte, status de enriquecimento e estratégias que o encontraram. |
+| `candidates.csv` | Um registro por id de repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at`, sua fonte e a data em que esse `pushed_at` foi observado (`pushed_at_observed_at`), status de enriquecimento e estratégias que o encontraram. |
 | `discovery-hits.csv` | Todas as origens, com consulta, subconsulta, `q` efetivo, endpoint, data de coleta e caminho. |
 | `coverage.json` | Recorte temporal e data de expansão da rodada, totais, contagens por `scope` e por estratégia, interseções, status do enriquecimento e cobertura por consulta e por subconsulta. |
 | `report.md` | Resumo legível: recorte temporal, cobertura por consulta e subconsultas saturadas ou com falha, contagens por `scope` e por estratégia, interseções, status do enriquecimento e limitações. |
