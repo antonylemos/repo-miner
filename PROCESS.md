@@ -31,7 +31,7 @@ O caminho principal passa pela CLI em `src/cli/main.ts` e pelos módulos do dire
 | `src/discovery/scope.ts` | `pushed_at` efetivo e classificação temporal. |
 | `src/discovery/github.ts` | Cliente da API GitHub: paginação, normalização, timeout, espera e tentativas. |
 | `src/discovery/runner.ts` | Execução sequencial, persistência de páginas e cálculo dos estados. |
-| `src/discovery/storage.ts` | Banco SQLite, consultas, candidatos, hits e checkpoints. |
+| `src/discovery/storage.ts` | Banco SQLite, consultas, subconsultas, candidatos, hits, enriquecimentos e checkpoints. |
 | `src/discovery/report.ts` | Exportação dos arquivos e cálculo das métricas e interseções. |
 | `src/discovery/types.ts` | Tipos compartilhados entre catálogo, cliente, executor e armazenamento. |
 | `config/discovery.queries.json` | Catálogo de consultas usado como configuração inicial. |
@@ -100,7 +100,7 @@ Se uma rodada foi interrompida ou terminou parcial, use o diretório existente:
 pnpm run cli discover --resume data/discovery/rodada-001
 ```
 
-A retomada continua pelas páginas indicadas nos checkpoints e usa o catálogo persistido naquela rodada. Ela exige novamente `GITHUB_TOKEN`. Consultas já marcadas como completas ou parciais não são executadas outra vez nessa mesma rodada; para refazer uma busca parcial ou alterar consultas, inicie uma rodada nova.
+A retomada continua pelas subconsultas indicadas nos checkpoints e usa o catálogo e as subconsultas persistidos naquela rodada. Ela exige novamente `GITHUB_TOKEN` e refaz apenas buscas e enriquecimentos pendentes ou com falha. Subconsultas já `complete` ou `partial` não são executadas outra vez nessa mesma rodada; para refazer uma busca parcial ou alterar consultas, inicie uma rodada nova.
 
 ### Regenerar os relatórios
 
@@ -118,20 +118,20 @@ Todos são gravados no diretório da rodada:
 
 | Arquivo | Conteúdo |
 | --- | --- |
-| `discovery.sqlite` | Catálogo persistido, páginas, candidatos, hits, estados e checkpoints; é a fonte usada para retomada e nova exportação. |
-| `candidates.csv` | Uma linha por id de repositório, com nome, URL e metadados JSON. |
-| `discovery-hits.csv` | Relação entre cada candidato e as consultas, caminhos e URLs que o encontraram. |
-| `coverage.json` | Totais da rodada, contagens por estratégia e estado/cobertura de cada consulta. |
-| `report.md` | Resumo legível, cobertura, interseções entre estratégias, consultas saturadas e limitações. |
-| `manifest.json` | Identificação da rodada, hash do catálogo, versões disponíveis e SHA-256 dos arquivos exportados. |
+| `discovery.sqlite` | Catálogo persistido, subconsultas, páginas, candidatos, hits, enriquecimentos e checkpoints por subconsulta; é a fonte usada para retomada e nova exportação. |
+| `candidates.csv` | Um registro por id de repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at` e sua fonte, status de enriquecimento e estratégias que o encontraram. |
+| `discovery-hits.csv` | Todas as origens, com consulta, subconsulta, `q` efetivo, endpoint, data de coleta e caminho. |
+| `coverage.json` | Recorte temporal e data de expansão da rodada, totais, contagens por `scope` e por estratégia, interseções, status do enriquecimento e cobertura por consulta e por subconsulta. |
+| `report.md` | Resumo legível: recorte temporal, cobertura por consulta e subconsultas saturadas ou com falha, contagens por `scope` e por estratégia, interseções, status do enriquecimento e limitações. |
+| `manifest.json` | Identificação da rodada, recorte temporal (`pushedSince`), data de expansão, hash do catálogo, versões disponíveis, estado da árvore git (`git.dirty`) e SHA-256 dos arquivos exportados. |
 
 ## Códigos de saída
 
 | Código | Significado |
 | --- | --- |
-| `0` | Ajuda exibida, relatório exportado ou descoberta em que todas as consultas terminaram completamente. |
+| `0` | Ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou descoberta em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ficou `pending` ou `failed`. |
 | `1` | Erro fatal: opções inválidas, token ausente para descoberta, catálogo inválido ou diretório/banco inexistente ou conflitante. |
-| `2` | Rodada parcial: cobertura incompleta, limite de resultados atingido, consulta com falha recuperável ou interrupção. |
+| `2` | Rodada parcial: subconsulta incompleta, saturada ou com falha recuperável, enriquecimento `pending` ou `failed`, dry-run com subconsulta acima de 1.000 resultados, ou interrupção. |
 
 ## Desenvolvimento e verificações
 
@@ -146,4 +146,4 @@ pnpm run build
 
 ## Limites de interpretação
 
-O GitHub pode alterar a indexação, sinalizar resultados incompletos e limitar a paginação. O executor para após dez páginas por consulta e registra a saturação quando o total informado excede mil resultados ou ainda há outra página após a décima. Por isso, os arquivos representam a cobertura observada durante aquela rodada, não um inventário completo do GitHub. Candidatos precisam de triagem humana para confirmar arquitetura, relevância e elegibilidade.
+O GitHub pode alterar a indexação, sinalizar resultados incompletos e limitar a paginação. O executor para após dez páginas por subconsulta e registra a saturação quando o total informado excede mil resultados ou ainda há outra página após a décima. Por isso, os arquivos representam a cobertura observada durante aquela rodada, não um inventário completo do GitHub. Candidatos precisam de triagem humana para confirmar arquitetura, relevância e elegibilidade.
