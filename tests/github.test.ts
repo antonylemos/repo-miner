@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createGitHubClient } from '../src/discovery/github.js';
-import type { Query } from '../src/discovery/types.js';
+import type { Subquery } from '../src/discovery/types.js';
 
 const repositoriesFixture = JSON.parse(
   readFileSync(
@@ -12,17 +12,21 @@ const repositoriesFixture = JSON.parse(
 const codeFixture = JSON.parse(
   readFileSync(new URL('./fixtures/code-page.json', import.meta.url), 'utf8'),
 );
-const repositoryQuery: Query = {
+const repositoryQuery: Subquery = {
   id: 'repo-query',
+  queryId: 'repo-query',
   strategy: 'terminology',
   endpoint: 'repositories',
   q: 'micro frontend in:name,description,readme',
+  partitionLabel: '',
 };
-const codeQuery: Query = {
+const codeQuery: Subquery = {
   id: 'code-query',
+  queryId: 'code-query',
   strategy: 'technology',
   endpoint: 'code',
   q: '"Module Federation" in:file',
+  partitionLabel: '',
 };
 
 function response(
@@ -76,7 +80,16 @@ describe('GitHub search client', () => {
       totalCount: 1,
       incomplete: false,
       hasNext: false,
-      hits: [{ candidate: { id: 701, fullName: 'example/shell' }, path: null }],
+      hits: [
+        {
+          candidate: {
+            id: 701,
+            nodeId: 'R_kgDOAAAC_Q',
+            fullName: 'example/shell',
+          },
+          path: null,
+        },
+      ],
     });
     expect(repositories.hits[0].candidate.metadata).toMatchObject({
       fork: true,
@@ -87,7 +100,11 @@ describe('GitHub search client', () => {
       incomplete: true,
       hits: [
         {
-          candidate: { id: 702, fullName: 'example/host' },
+          candidate: {
+            id: 702,
+            nodeId: 'R_kgDOAAAC_g',
+            fullName: 'example/host',
+          },
           path: 'apps/shell/root-config.ts',
         },
       ],
@@ -286,5 +303,79 @@ describe('GitHub search client', () => {
     controller.abort(new Error('cancelled during wait'));
 
     await expect(pending).rejects.toThrow('cancelled during wait');
+  });
+
+  it('should count results with a single-item request', async () => {
+    let requestedUrl = '';
+    const client = makeClient(async (input) => {
+      requestedUrl = String(input);
+      return response({ ...repositoriesFixture, total_count: 4321 });
+    });
+
+    const count = await client.count(
+      repositoryQuery,
+      new AbortController().signal,
+    );
+
+    const url = new URL(requestedUrl);
+    expect(url.searchParams.get('per_page')).toBe('1');
+    expect(url.searchParams.get('page')).toBe('1');
+    expect(count).toEqual({ totalCount: 4321, incomplete: false });
+  });
+
+  it('should reject a repository without node_id', async () => {
+    const [item] = repositoriesFixture.items;
+    const { node_id: _removed, ...withoutNodeId } = item;
+    const client = makeClient(async () =>
+      response({ ...repositoriesFixture, items: [withoutNodeId] }),
+    );
+
+    await expect(
+      client.search(repositoryQuery, 1, new AbortController().signal),
+    ).rejects.toThrow(/repository metadata/);
+  });
+
+  it('should send GraphQL-style POST requests on their own lane', async () => {
+    const { createHttpClient } = await import('../src/discovery/http.js');
+    const sleeps: number[] = [];
+    const time = { value: 1_000_000 };
+    const seen: Array<{
+      method?: string;
+      body?: unknown;
+      type: string | null;
+    }> = [];
+    const http = createHttpClient({
+      token: 'test-token-secret',
+      fetchFn: async (_input, init) => {
+        seen.push({
+          method: init?.method,
+          body: init?.body,
+          type: new Headers(init?.headers).get('content-type'),
+        });
+        return response({ data: {} });
+      },
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        time.value += ms;
+      },
+      now: () => time.value,
+    });
+    const request = {
+      url: new URL('https://api.github.com/graphql'),
+      lane: 'graphql',
+      minimumIntervalMs: 1_000,
+      method: 'POST' as const,
+      body: '{"query":"x"}',
+    };
+
+    await http.send(request, new AbortController().signal);
+    await http.send(request, new AbortController().signal);
+
+    expect(seen[0]).toEqual({
+      method: 'POST',
+      body: '{"query":"x"}',
+      type: 'application/json',
+    });
+    expect(sleeps).toEqual([1_000]);
   });
 });
