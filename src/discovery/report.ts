@@ -356,16 +356,15 @@ function reportLines(data: {
       (status) => `| ${status} | ${data.enrichment[status]} |`,
     ),
     '',
-    '## Implementações confirmadas',
+    '## Casos confirmados',
     '',
-    'Contagens de implementações confirmadas não estão disponíveis nesta etapa. A descoberta não determina abordagem, elegibilidade ou prevalência de micro-frontends.',
+    'Contagens de casos confirmados não estão disponíveis nesta etapa. A descoberta encontra candidatos; ela não determina se pertencem ao fenômeno pesquisado, sua elegibilidade nem a prevalência do fenômeno.',
     '',
     '## Limitações',
     '',
     '- A busca depende da indexação do GitHub, que pode retornar resultados incompletos, mudar durante a rodada e limitar cada consulta a 1.000 resultados. Os totais descrevem apenas estas consultas, não a população de repositórios.',
     '- As APIs de busca excluem forks por padrão; forks com implementação independente não são descobertos.',
     '- A busca de código considera apenas a branch padrão e arquivos de até 384 KB.',
-    '- Web Components não possui artefato que distinga uso como MFE; esses casos dependem sobretudo da terminologia e da triagem.',
   ];
 }
 

@@ -239,7 +239,7 @@ describe('exportRun', () => {
     expect(report).toContain('Recorte temporal: pushed >= 2024-01-01');
   });
 
-  it('should report enrichment status, limitations and the absence of confirmed implementations', async () => {
+  it('should report enrichment status, generic limitations and the absence of confirmed cases', async () => {
     const { directory, store, save } = setup();
     save('query-b#size:0..999', [hit(5, { path: 'p', metadata: {} })]);
     store.queueEnrichment();
@@ -254,10 +254,11 @@ describe('exportRun', () => {
     expect(report).toContain('| not_found | 1 |');
     expect(report).toContain('forks');
     expect(report).toContain('384 KB');
-    expect(report).toContain('Web Components');
     expect(report).toContain(
-      'Contagens de implementações confirmadas não estão disponíveis',
+      'Contagens de casos confirmados não estão disponíveis',
     );
+    // The tool is domain-agnostic: study-specific caveats live in the use-case docs.
+    expect(report).not.toMatch(/web components|micro-?frontends?|\bMFE\b/i);
   });
 
   it('should record run parameters, git state and hashes of every exported file', async () => {
