@@ -61,6 +61,73 @@ function readCsv(dir: string, name: string) {
 }
 
 describe('exportRun', () => {
+  it('should report superseded historical failures without updating the persisted run', async () => {
+    const { directory, store, subqueries } = createTestStore(
+      catalogOf([
+        query({ id: 'repo' }),
+        query({ id: 'code', endpoint: 'code' }),
+      ]),
+    );
+    store.savePage(
+      subqueries[1],
+      1,
+      page([hit(1, { metadata: {} })]),
+      { subqueryId: 'code', nextPage: null, state: 'complete' },
+      'code-at',
+    );
+    store.queueEnrichment();
+    store.saveEnrichments(
+      [
+        {
+          repositoryId: 1,
+          status: 'failed',
+          data: null,
+          reason: 'GraphQL unavailable',
+        },
+      ],
+      'failed-at',
+    );
+    store.savePage(
+      subqueries[0],
+      1,
+      page([hit(1)]),
+      { subqueryId: 'repo', nextPage: null, state: 'complete' },
+      'rest-at',
+    );
+    store.finish({
+      run: { ...store.getRun(), state: 'partial', endedAt: 'old-end' },
+      coverage: store.readCoverage(),
+    });
+    const persisted = store.getRun();
+    await exportRun(store, directory);
+    const coverage = JSON.parse(
+      readFileSync(join(directory, 'coverage.json'), 'utf8'),
+    );
+    expect(coverage.enrichment).toEqual({
+      pending: 0,
+      ok: 0,
+      not_found: 0,
+      failed: 1,
+    });
+    expect(coverage.enrichmentRequired).toEqual({ pending: 0, failed: 0 });
+    expect(coverage.enrichmentSuperseded).toEqual({ pending: 0, failed: 1 });
+    expect(readCsv(directory, 'candidates.csv')[0]).toMatchObject({
+      scope: 'in_scope',
+      enrichment_status: 'failed',
+      pushed_at_source: 'search',
+    });
+    const report = readFileSync(join(directory, 'report.md'), 'utf8');
+    expect(report).toContain('| failed | 1 |');
+    expect(report).toContain('Necessários: pending=0; failed=0');
+    expect(report).toContain(
+      'Dispensados por metadados de busca: pending=0; failed=1',
+    );
+    expect(store.getRun()).toEqual(persisted);
+    expect(store.readCandidates()[0].enrichment?.reason).toBe(
+      'GraphQL unavailable',
+    );
+  });
+
   it('should recover REST metadata from a v2 file without changing original records', async () => {
     const sourceCatalog = catalogOf(
       [query({ id: 'repo' }), query({ id: 'code', endpoint: 'code' })],

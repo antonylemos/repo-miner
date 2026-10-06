@@ -17,6 +17,7 @@ import type { DiscoveryStore } from './storage.js';
 import type {
   Coverage,
   EnrichmentStatus,
+  EnrichmentSummary,
   Query,
   Run,
   Scope,
@@ -118,7 +119,7 @@ export async function exportRun(
   const run = store.getRun();
   const hits = store.readHits();
   const coverage = store.readCoverage();
-  const enrichment = store.readEnrichmentCounts();
+  const enrichment = store.readEnrichmentSummary();
 
   const candidatesPath = join(outputDir, 'candidates.csv');
   onProgress(1, EXPORT_STEPS, 'candidates.csv');
@@ -178,7 +179,9 @@ export async function exportRun(
     byScope,
     byStrategy,
     intersections: overlap,
-    enrichment,
+    enrichment: enrichment.counts,
+    enrichmentRequired: enrichment.required,
+    enrichmentSuperseded: enrichment.superseded,
     queries,
     subqueries: coverage,
   };
@@ -341,7 +344,7 @@ function reportLines(data: {
     all: Record<Strategy, number>;
   };
   overlap: Intersections;
-  enrichment: Record<EnrichmentStatus, number>;
+  enrichment: EnrichmentSummary;
   queries: QueryCoverage[];
   coverage: Coverage[];
 }): string[] {
@@ -415,8 +418,12 @@ function reportLines(data: {
     '| Status | Repositórios |',
     '| --- | ---: |',
     ...ENRICHMENT_STATUSES.map(
-      (status) => `| ${status} | ${data.enrichment[status]} |`,
+      (status) => `| ${status} | ${data.enrichment.counts[status]} |`,
     ),
+    '',
+    `Necessários: pending=${data.enrichment.required.pending}; failed=${data.enrichment.required.failed}.`,
+    `Dispensados por metadados de busca: pending=${data.enrichment.superseded.pending}; failed=${data.enrichment.superseded.failed}.`,
+    'A tabela preserva o histórico de enriquecimento. O diagnóstico de pendências necessárias usa os metadados de busca atuais; o estado persistido da rodada só é atualizado por discover --resume, não pela exportação de report.',
     '',
     '## Casos confirmados',
     '',

@@ -10,6 +10,7 @@ import type {
   Endpoint,
   EnrichmentResult,
   EnrichmentStatus,
+  EnrichmentSummary,
   EnrichmentTarget,
   Partition,
   Query,
@@ -66,14 +67,16 @@ export interface DiscoveryStore {
   readCoverage(): Coverage[];
   /** Aggregates page and checkpoint facts for one subquery. */
   readSubqueryCoverage(subqueryId: string): Coverage;
-  /** Queues candidates whose search metadata lacks pushed_at; returns how many were added. */
+  /** Queues candidates without a usable search push; returns how many were added. */
   queueEnrichment(): number;
-  /** Reads pending and failed enrichment targets. */
+  /** Reads pending and failed enrichment targets that still lack a usable search push. */
   readEnrichmentQueue(): EnrichmentTarget[];
   /** Stores one batch of enrichment results atomically. */
   saveEnrichments(results: EnrichmentResult[], fetchedAt: string): void;
   /** Counts enrichment rows by status. */
   readEnrichmentCounts(): Record<EnrichmentStatus, number>;
+  /** Counts historical results and distinguishes required work from work superseded by search. */
+  readEnrichmentSummary(): EnrichmentSummary;
   /** Closes the SQLite connection. */
   close(): void;
 }
@@ -564,8 +567,8 @@ export function openStore(path: string): DiscoveryStore {
       const result = database
         .prepare(
           `INSERT OR IGNORE INTO enrichments (repository_id, status)
-           SELECT repository_id, 'pending' FROM candidates
-           WHERE json_extract(metadata_json, '$.pushed_at') IS NULL`,
+           SELECT repository_id, 'pending' FROM (${CANDIDATE_OBSERVATIONS_SELECT})
+           WHERE is_usable_push(json_extract(metadata_json, '$.pushed_at')) = 0`,
         )
         .run();
       return Number(result.changes);
@@ -574,10 +577,10 @@ export function openStore(path: string): DiscoveryStore {
     readEnrichmentQueue() {
       const rows = database
         .prepare(
-          `SELECT e.repository_id, c.node_id
-           FROM enrichments e JOIN candidates c ON c.repository_id = e.repository_id
-           WHERE e.status IN ('pending', 'failed')
-           ORDER BY e.repository_id`,
+          `SELECT repository_id, node_id FROM (${CANDIDATE_OBSERVATIONS_SELECT})
+           WHERE status IN ('pending', 'failed')
+             AND is_usable_push(json_extract(metadata_json, '$.pushed_at')) = 0
+           ORDER BY repository_id`,
         )
         .all() as StoredRow[];
       return rows.map((row) => ({
@@ -619,6 +622,36 @@ export function openStore(path: string): DiscoveryStore {
         counts[row.status as EnrichmentStatus] = Number(row.count);
       }
       return counts;
+    },
+
+    readEnrichmentSummary() {
+      const summary: EnrichmentSummary = {
+        counts: { pending: 0, ok: 0, not_found: 0, failed: 0 },
+        required: { pending: 0, failed: 0 },
+        superseded: { pending: 0, failed: 0 },
+      };
+      const rows = database
+        .prepare(
+          `SELECT status, is_usable_push(json_extract(metadata_json, '$.pushed_at')) AS usable_push,
+                  COUNT(*) AS count
+           FROM (${CANDIDATE_OBSERVATIONS_SELECT})
+           WHERE status IS NOT NULL
+           GROUP BY status, usable_push`,
+        )
+        .all() as StoredRow[];
+      for (const row of rows) {
+        const status = row.status as EnrichmentStatus;
+        const count = Number(row.count);
+        summary.counts[status] += count;
+        if (status === 'pending' || status === 'failed') {
+          const relevance =
+            Number(row.usable_push) === 1
+              ? summary.superseded
+              : summary.required;
+          relevance[status] += count;
+        }
+      }
+      return summary;
     },
 
     close() {

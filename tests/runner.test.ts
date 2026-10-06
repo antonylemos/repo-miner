@@ -1,4 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createEnrichmentClient } from '../src/discovery/enrichment.js';
+import { exportRun } from '../src/discovery/report.js';
 import { runDiscovery } from '../src/discovery/runner.js';
 import type {
   EnrichmentClient,
@@ -44,6 +48,278 @@ function run(
 }
 
 describe('runDiscovery', () => {
+  it('should retry only a node affected by a partial GraphQL response', async () => {
+    const { store } = createTestStore(oneQuery);
+    let searches = 0;
+    const client: SearchClient = {
+      async search() {
+        searches++;
+        return page([hit(1, { metadata: {} }), hit(2, { metadata: {} })]);
+      },
+    };
+    const attempts: string[][] = [];
+    const enrichmentClient = createEnrichmentClient({
+      token: 'secret',
+      now: () => 0,
+      sleep: async () => {},
+      fetchFn: async (_input, init) => {
+        attempts.push(JSON.parse(String(init?.body)).variables.ids);
+        return new Response(
+          JSON.stringify(
+            attempts.length === 1
+              ? {
+                  data: {
+                    nodes: [
+                      { databaseId: 1, pushedAt: null },
+                      { databaseId: 2, pushedAt: '2025-01-01T00:00:00Z' },
+                    ],
+                  },
+                  errors: [
+                    {
+                      path: ['nodes', 0, 'pushedAt'],
+                      message: 'temporarily unavailable',
+                    },
+                  ],
+                }
+              : {
+                  data: {
+                    nodes: [
+                      { databaseId: 1, pushedAt: '2025-01-01T00:00:00Z' },
+                    ],
+                  },
+                },
+          ),
+        );
+      },
+    });
+    expect((await run(store, client, enrichmentClient)).run.state).toBe(
+      'partial',
+    );
+    expect(store.readEnrichmentSummary().required).toEqual({
+      pending: 0,
+      failed: 1,
+    });
+    expect((await run(store, client, enrichmentClient)).run.state).toBe(
+      'complete',
+    );
+    expect(searches).toBe(1);
+    expect(attempts).toEqual([['R_1', 'R_2'], ['R_1']]);
+    expect(store.readEnrichmentCounts()).toEqual({
+      pending: 0,
+      ok: 2,
+      not_found: 0,
+      failed: 0,
+    });
+  });
+
+  it('should retain an in-flight failure when REST subsequently makes enrichment unnecessary', async () => {
+    const { store } = createTestStore(
+      catalogOf([
+        query({ id: 'repo' }),
+        query({ id: 'code', endpoint: 'code' }),
+      ]),
+    );
+    let releaseRest: () => void = () => {};
+    const graphqlStarted = new Promise<void>((resolve) => {
+      releaseRest = resolve;
+    });
+    let releaseGraphql: () => void = () => {};
+    const restCommitted = new Promise<void>((resolve) => {
+      releaseGraphql = resolve;
+    });
+    let calls = 0;
+    const result = await runDiscovery({
+      store,
+      signal: new AbortController().signal,
+      now: fixedNow,
+      client: {
+        async search(subquery) {
+          if (subquery.endpoint === 'repositories') await graphqlStarted;
+          return page(
+            Array.from({ length: 100 }, (_, index) =>
+              hit(index + 1, {
+                metadata:
+                  subquery.endpoint === 'code'
+                    ? {}
+                    : { pushed_at: '2025-01-01T00:00:00Z' },
+              }),
+            ),
+          );
+        },
+      },
+      enrichmentClient: {
+        async fetchRepositories(targets) {
+          calls++;
+          releaseRest();
+          await restCommitted;
+          return targets.map((target) => ({
+            repositoryId: target.repositoryId,
+            status: 'failed' as const,
+            data: null,
+            reason: 'GraphQL unavailable',
+          }));
+        },
+      },
+      onProgress(event) {
+        if (event.phase === 'search' && event.done === 2) releaseGraphql();
+      },
+    });
+    expect(calls).toBe(1);
+    expect(result.run.state).toBe('complete');
+    expect(store.readEnrichmentSummary()).toEqual({
+      counts: { pending: 0, ok: 0, not_found: 0, failed: 100 },
+      required: { pending: 0, failed: 0 },
+      superseded: { pending: 0, failed: 100 },
+    });
+    expect(store.readCandidates()[0].enrichment?.reason).toBe(
+      'GraphQL unavailable',
+    );
+  });
+
+  it.each(['pending', 'failed'] as const)(
+    'should complete with a superseded %s enrichment without extra requests',
+    async (status) => {
+      const { store, subqueries } = createTestStore(
+        catalogOf([
+          query({ id: 'repo' }),
+          query({ id: 'code', endpoint: 'code' }),
+        ]),
+      );
+      store.savePage(
+        subqueries[1],
+        1,
+        page([hit(1, { metadata: {} })]),
+        { subqueryId: 'code', nextPage: null, state: 'complete' },
+        'code-at',
+      );
+      store.queueEnrichment();
+      if (status === 'failed')
+        store.saveEnrichments(
+          [
+            {
+              repositoryId: 1,
+              status,
+              data: null,
+              reason: 'GraphQL unavailable',
+            },
+          ],
+          'failed-at',
+        );
+      store.savePage(
+        subqueries[0],
+        1,
+        page([hit(1)]),
+        { subqueryId: 'repo', nextPage: null, state: 'complete' },
+        'rest-at',
+      );
+      let searches = 0;
+      let enrichments = 0;
+      const result = await run(
+        store,
+        {
+          async search() {
+            searches++;
+            return page([]);
+          },
+        },
+        {
+          async fetchRepositories() {
+            enrichments++;
+            return [];
+          },
+        },
+      );
+      expect(result.run.state).toBe('complete');
+      expect(searches).toBe(0);
+      expect(enrichments).toBe(0);
+      expect(store.readCandidates()[0].enrichment?.status).toBe(status);
+    },
+  );
+
+  it('should produce the same CSV and scope after either confirmed endpoint order when enrichment is dispensable', async () => {
+    const csv: string[] = [];
+    for (const codeFirst of [true, false]) {
+      const { directory, store, subqueries } = createTestStore(
+        catalogOf([
+          query({ id: 'repo' }),
+          query({ id: 'historical-code', endpoint: 'code' }),
+          query({ id: 'code', endpoint: 'code' }),
+        ]),
+      );
+      // Both permutations begin with the same retained enrichment history.
+      store.savePage(
+        subqueries[1],
+        1,
+        page([hit(1, { metadata: {} })]),
+        { subqueryId: 'historical-code', nextPage: null, state: 'complete' },
+        '2026-10-06T09:00:00Z',
+      );
+      store.queueEnrichment();
+      let release: () => void = () => {};
+      const committed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let searches = 0;
+      let enrichments = 0;
+      const result = await runDiscovery({
+        store,
+        client: {
+          async search(subquery) {
+            searches++;
+            if ((subquery.endpoint === 'code') !== codeFirst) await committed;
+            return page([
+              hit(1, {
+                metadata:
+                  subquery.endpoint === 'code'
+                    ? {}
+                    : { pushed_at: '2025-01-01T00:00:00Z' },
+              }),
+            ]);
+          },
+        },
+        enrichmentClient: {
+          async fetchRepositories() {
+            enrichments++;
+            return [];
+          },
+        },
+        signal: new AbortController().signal,
+        now: () => '2026-10-06T10:00:00Z',
+        onProgress(event) {
+          const firstId = codeFirst ? 'code' : 'repo';
+          const secondId = codeFirst ? 'repo' : 'code';
+          if (event.phase === 'search' && event.label === firstId) {
+            expect(store.getCheckpoint(firstId)).toEqual({
+              subqueryId: firstId,
+              nextPage: null,
+              state: 'complete',
+            });
+            expect(store.getCheckpoint(secondId).state).toBe('pending');
+            expect(
+              store.readHits().find((hit) => hit.subqueryId === firstId)
+                ?.endpoint,
+            ).toBe(codeFirst ? 'code' : 'repositories');
+            release();
+          }
+        },
+      });
+      expect(result.run.state).toBe('complete');
+      expect(searches).toBe(2);
+      expect(enrichments).toBe(0);
+      await exportRun(store, directory);
+      csv.push(readFileSync(join(directory, 'candidates.csv'), 'utf8'));
+      const coverage = JSON.parse(
+        readFileSync(join(directory, 'coverage.json'), 'utf8'),
+      );
+      expect(coverage.byScope).toEqual({
+        in_scope: 1,
+        out_of_scope_temporal: 0,
+        unknown: 0,
+      });
+    }
+    expect(csv[0]).toBe(csv[1]);
+  });
+
   it('should report search progress once per subquery', async () => {
     const { store } = createTestStore(twoQueries);
     const client: SearchClient = {

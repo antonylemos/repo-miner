@@ -82,11 +82,11 @@ export async function runDiscovery(
   if (!signal.aborted) await enricher.drain(onProgress);
 
   const coverage = store.readCoverage();
-  const enrichment = store.readEnrichmentCounts();
+  const enrichment = store.readEnrichmentSummary();
   const complete =
     coverage.every((entry) => entry.state === 'complete') &&
-    enrichment.pending === 0 &&
-    enrichment.failed === 0;
+    enrichment.required.pending === 0 &&
+    enrichment.required.failed === 0;
   const result: RunResult = {
     run: {
       ...store.getRun(),

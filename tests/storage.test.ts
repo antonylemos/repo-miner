@@ -33,6 +33,104 @@ function complete(subqueryId: string) {
 }
 
 describe('discovery storage', () => {
+  it.each(['failed', 'pending'] as const)(
+    'should preserve a %s enrichment but stop retrying it after a usable REST observation',
+    (status) => {
+      const { store, subqueries } = createTestStore(
+        catalogOf([
+          query({ id: 'repo' }),
+          query({ id: 'code', endpoint: 'code' }),
+        ]),
+      );
+      store.savePage(
+        subqueries[1],
+        1,
+        page([hit(1, { metadata: {} })]),
+        complete('code'),
+        'code-at',
+      );
+      store.queueEnrichment();
+      if (status === 'failed') {
+        store.saveEnrichments(
+          [
+            {
+              repositoryId: 1,
+              status,
+              data: null,
+              reason: 'GraphQL unavailable',
+            },
+          ],
+          'failed-at',
+        );
+      }
+      store.savePage(
+        subqueries[0],
+        1,
+        page([hit(1)]),
+        complete('repo'),
+        'rest-at',
+      );
+
+      expect(store.readEnrichmentQueue()).toEqual([]);
+      expect(store.queueEnrichment()).toBe(0);
+      expect(store.readEnrichmentSummary()).toEqual({
+        counts: {
+          pending: status === 'pending' ? 1 : 0,
+          ok: 0,
+          not_found: 0,
+          failed: status === 'failed' ? 1 : 0,
+        },
+        required: { pending: 0, failed: 0 },
+        superseded: {
+          pending: status === 'pending' ? 1 : 0,
+          failed: status === 'failed' ? 1 : 0,
+        },
+      });
+      expect(store.readCandidates()[0].enrichment).toMatchObject({
+        status,
+        reason: status === 'failed' ? 'GraphQL unavailable' : null,
+      });
+    },
+  );
+
+  it('should queue invalid search pushes and count failures still required', () => {
+    const { store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'repo' })]),
+    );
+    store.savePage(
+      subqueries[0],
+      1,
+      page([
+        hit(1, { metadata: { pushed_at: 'invalid' } }),
+        hit(2, { metadata: { pushed_at: '' } }),
+        hit(3, { metadata: { pushed_at: 123 } }),
+        hit(4),
+      ]),
+      complete('repo'),
+      'at',
+    );
+    expect(store.queueEnrichment()).toBe(3);
+    store.saveEnrichments(
+      [
+        {
+          repositoryId: 1,
+          status: 'failed',
+          data: null,
+          reason: 'unavailable',
+        },
+      ],
+      'at',
+    );
+    expect(store.readEnrichmentSummary()).toEqual({
+      counts: { pending: 2, ok: 0, not_found: 0, failed: 1 },
+      required: { pending: 2, failed: 1 },
+      superseded: { pending: 0, failed: 0 },
+    });
+    expect(
+      store.readEnrichmentQueue().map((target) => target.repositoryId),
+    ).toEqual([1, 2, 3]);
+  });
+
   it('should select repository metadata regardless of endpoint arrival order', () => {
     for (const codeFirst of [true, false]) {
       const { store, subqueries } = createTestStore(

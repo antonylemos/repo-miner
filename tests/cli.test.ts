@@ -2,12 +2,16 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli/main.js';
+import { openStore } from '../src/discovery/storage.js';
 import type { Catalog } from '../src/discovery/types.js';
 import {
   catalogOf,
   cleanupTestStores,
   createTestStore,
+  hit,
+  page,
   query,
+  trackStore,
 } from './helpers.js';
 
 const repositoryQuery = query({ id: 'repo', q: 'microfrontend' });
@@ -97,6 +101,131 @@ function githubMock(
 }
 
 describe('discovery CLI', () => {
+  it('should return partial then retry only the affected GraphQL node without repeating completed searches', async () => {
+    const { queriesPath, outputDir } = workspace(catalogOf([codeQuery]));
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    let searches = 0;
+    const attempts: string[][] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (new URL(String(input)).pathname === '/graphql') {
+        attempts.push(JSON.parse(String(init?.body)).variables.ids);
+        return json(
+          attempts.length === 1
+            ? {
+                data: {
+                  nodes: [
+                    { databaseId: 1, pushedAt: null },
+                    { databaseId: 2, pushedAt: '2025-01-01T00:00:00Z' },
+                  ],
+                },
+                errors: [
+                  {
+                    path: ['nodes', 0, 'pushedAt'],
+                    message: 'temporarily unavailable',
+                  },
+                ],
+              }
+            : {
+                data: {
+                  nodes: [{ databaseId: 1, pushedAt: '2025-01-01T00:00:00Z' }],
+                },
+              },
+        );
+      }
+      searches++;
+      return json({
+        total_count: 2,
+        incomplete_results: false,
+        items: [1, 2].map((id) => ({
+          path: 'package.json',
+          html_url: `https://github.com/org/r${id}/blob/main/package.json`,
+          repository: { ...repository(id), pushed_at: undefined },
+        })),
+      });
+    });
+    expect(
+      await main(
+        ['discover', '--queries', queriesPath, '--output', outputDir],
+        env,
+      ),
+    ).toBe(2);
+    expect(await main(['discover', '--resume', outputDir], env)).toBe(0);
+    expect(searches).toBe(1);
+    expect(attempts).toEqual([['R_1', 'R_2'], ['R_1']]);
+  });
+
+  it('should report a recoverable v2 run offline and update its state only on resume', async () => {
+    const { directory, store, subqueries } = createTestStore(
+      catalogOf([repositoryQuery, codeQuery]),
+    );
+    store.savePage(
+      subqueries[1],
+      1,
+      page([hit(1, { metadata: {} }), hit(2, { metadata: {} })]),
+      { subqueryId: 'code', nextPage: null, state: 'complete' },
+      'code-at',
+    );
+    store.queueEnrichment();
+    store.saveEnrichments(
+      [
+        {
+          repositoryId: 1,
+          status: 'failed',
+          data: null,
+          reason: 'GraphQL unavailable',
+        },
+        {
+          repositoryId: 2,
+          status: 'ok',
+          data: { databaseId: 2, pushedAt: null },
+          reason: null,
+        },
+      ],
+      'old-fetch',
+    );
+    store.savePage(
+      subqueries[0],
+      1,
+      page([hit(1)]),
+      { subqueryId: 'repo', nextPage: null, state: 'complete' },
+      'rest-at',
+    );
+    store.finish({
+      run: { ...store.getRun(), state: 'partial', endedAt: 'old-end' },
+      coverage: store.readCoverage(),
+    });
+    const oldRun = store.getRun();
+    store.close();
+    let requests = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      requests++;
+      throw new Error('unexpected network');
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(await main(['report', '--run', directory], {})).toBe(0);
+    const reported = trackStore(openStore(join(directory, 'discovery.sqlite')));
+    expect(reported.getRun()).toEqual(oldRun);
+    expect(reported.readCandidates()[1].enrichment).toMatchObject({
+      status: 'ok',
+      data: { pushedAt: null },
+      reason: null,
+    });
+    const coverage = JSON.parse(
+      readFileSync(join(directory, 'coverage.json'), 'utf8'),
+    );
+    expect(coverage.enrichmentRequired).toEqual({ pending: 0, failed: 0 });
+    expect(coverage.enrichmentSuperseded).toEqual({ pending: 0, failed: 1 });
+    expect(coverage.byScope).toEqual({
+      in_scope: 1,
+      out_of_scope_temporal: 0,
+      unknown: 1,
+    });
+    expect(await main(['discover', '--resume', directory], env)).toBe(0);
+    expect(requests).toBe(0);
+    expect(reported.getRun().state).toBe('complete');
+    expect(reported.readCandidates()[1].enrichment?.reason).toBeNull();
+  });
+
   it('should show help without a token or network access', async () => {
     const fetch = vi.spyOn(globalThis, 'fetch');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});

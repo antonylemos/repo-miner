@@ -72,6 +72,11 @@ export type Coverage = {
   reason: string | null;
 };
 export type EnrichmentStatus = 'pending' | 'ok' | 'not_found' | 'failed';
+export type EnrichmentSummary = {
+  counts: Record<EnrichmentStatus, number>;
+  required: { pending: number; failed: number };
+  superseded: { pending: number; failed: number };
+};
 export type EnrichmentTarget = { repositoryId: number; nodeId: string };
 export type EnrichmentResult = {
   repositoryId: number;
