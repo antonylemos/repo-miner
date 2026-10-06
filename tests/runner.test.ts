@@ -69,6 +69,48 @@ describe('runDiscovery', () => {
     ]);
   });
 
+  it('should search repositories and code endpoints concurrently', async () => {
+    const { store } = createTestStore(
+      catalogOf([
+        query({ id: 'repo-a' }),
+        query({ id: 'repo-b' }),
+        query({ id: 'code-a', endpoint: 'code' }),
+      ]),
+    );
+    let releaseCode: () => void = () => {};
+    const codeStarted = new Promise<void>((resolve) => {
+      releaseCode = resolve;
+    });
+    const order: string[] = [];
+    const client: SearchClient = {
+      async search(subquery) {
+        order.push(subquery.id);
+        if (subquery.endpoint === 'code') releaseCode();
+        // A repositories search only resolves once the code lane has started.
+        else await codeStarted;
+        return page([]);
+      },
+    };
+    const events: { done: number }[] = [];
+
+    const result = await runDiscovery({
+      store,
+      client,
+      enrichmentClient: noEnrichment,
+      signal: new AbortController().signal,
+      now: fixedNow,
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(order.slice(0, 2).sort()).toEqual(['code-a', 'repo-a']);
+    expect(order.filter((id) => id.startsWith('repo'))).toEqual([
+      'repo-a',
+      'repo-b',
+    ]);
+    expect(events.map(({ done }) => done)).toEqual([0, 1, 2, 3]);
+    expect(result.run.state).toBe('complete');
+  });
+
   it('should collect every candidate and finish complete', async () => {
     const { store } = createTestStore(oneQuery);
     const client: SearchClient = {

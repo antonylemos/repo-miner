@@ -29,7 +29,7 @@ export type ProgressEvent = {
   label: string;
 };
 
-/** Runs stored subqueries sequentially, then enriches candidates; GitHub's index may change during a run. */
+/** Runs stored subqueries one endpoint lane at a time each, then enriches candidates; GitHub's index may change during a run. */
 export async function runDiscovery(
   options: RunDiscoveryOptions,
 ): Promise<RunResult> {
@@ -46,16 +46,28 @@ export async function runDiscovery(
     total: subqueries.length,
     label: '',
   });
-  for (const [index, subquery] of subqueries.entries()) {
-    if (signal.aborted) break;
-    await searchSubquery(store, client, subquery, signal, now);
-    onProgress?.({
-      phase: 'search',
-      done: index + 1,
-      total: subqueries.length,
-      label: subquery.id,
-    });
-  }
+  // Each endpoint has its own GitHub rate limit, so endpoints run concurrently
+  // while subqueries within one endpoint stay sequential to respect its pacing.
+  let done = 0;
+  const searchEndpoint = async (endpointSubqueries: Subquery[]) => {
+    for (const subquery of endpointSubqueries) {
+      if (signal.aborted) return;
+      await searchSubquery(store, client, subquery, signal, now);
+      done += 1;
+      onProgress?.({
+        phase: 'search',
+        done,
+        total: subqueries.length,
+        label: subquery.id,
+      });
+    }
+  };
+  const endpoints = [...new Set(subqueries.map(({ endpoint }) => endpoint))];
+  await Promise.all(
+    endpoints.map((endpoint) =>
+      searchEndpoint(subqueries.filter((s) => s.endpoint === endpoint)),
+    ),
+  );
   // Queue even after an abort so the run cannot be reported complete with unenriched candidates.
   store.queueEnrichment();
   if (!signal.aborted) {
