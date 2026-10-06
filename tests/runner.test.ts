@@ -271,6 +271,92 @@ describe('runDiscovery', () => {
     expect(result.run.state).toBe('complete');
   });
 
+  it('should enrich full batches while search is still running', async () => {
+    const { store } = createTestStore(twoQueries);
+    let releaseSecond: () => void = () => {};
+    const enrichmentStarted = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const client: SearchClient = {
+      async search(subquery) {
+        if (subquery.id === 'first') {
+          return page(
+            Array.from({ length: 120 }, (_, index) =>
+              hit(index + 1, { metadata: noPush }),
+            ),
+          );
+        }
+        // The second search only resolves once enrichment has begun.
+        await enrichmentStarted;
+        return page([hit(500, { metadata: noPush })]);
+      },
+    };
+    const batches: number[] = [];
+    const enrichmentClient: EnrichmentClient = {
+      async fetchRepositories(targets) {
+        batches.push(targets.length);
+        releaseSecond();
+        return targets.map((target) => ({
+          repositoryId: target.repositoryId,
+          status: 'ok' as const,
+          data: { pushedAt: '2025-01-01T00:00:00Z' },
+          reason: null,
+        }));
+      },
+    };
+    const events: unknown[] = [];
+
+    const result = await runDiscovery({
+      store,
+      client,
+      enrichmentClient,
+      signal: new AbortController().signal,
+      now: fixedNow,
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(batches).toEqual([100, 21]);
+    expect(store.readEnrichmentCounts().ok).toBe(121);
+    expect(result.run.state).toBe('complete');
+    // Enrichment progress only covers the work left once search finishes.
+    expect(
+      events.filter(
+        (event) => (event as { phase: string }).phase === 'enrichment',
+      ),
+    ).toEqual([
+      { phase: 'enrichment', done: 0, total: 21, label: '' },
+      { phase: 'enrichment', done: 21, total: 21, label: '21 repositórios' },
+    ]);
+  });
+
+  it('should not retry a batch that failed earlier in the same run', async () => {
+    const { store } = createTestStore(twoQueries);
+    const client: SearchClient = {
+      async search(subquery) {
+        return subquery.id === 'first'
+          ? page(
+              Array.from({ length: 100 }, (_, index) =>
+                hit(index + 1, { metadata: noPush }),
+              ),
+            )
+          : page([]);
+      },
+    };
+    let calls = 0;
+    const enrichmentClient: EnrichmentClient = {
+      async fetchRepositories() {
+        calls += 1;
+        throw new Error('GraphQL unavailable');
+      },
+    };
+
+    const result = await run(store, client, enrichmentClient);
+
+    expect(calls).toBe(1);
+    expect(store.readEnrichmentCounts().failed).toBe(100);
+    expect(result.run.state).toBe('partial');
+  });
+
   it('should record a failed batch and finish partial', async () => {
     const { store } = createTestStore(oneQuery);
     const client: SearchClient = {
