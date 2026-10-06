@@ -97,6 +97,224 @@ describe('enrichment client', () => {
     expect(result.reason).toMatch(/no repository/);
   });
 
+  it('should fail nodes with nested field errors while preserving successful siblings', async () => {
+    const client = makeClient(async () =>
+      json({
+        data: {
+          nodes: [
+            { databaseId: 1, pushedAt: null },
+            { databaseId: 2, pushedAt: '2025-06-01T00:00:00Z' },
+            { databaseId: 3, pushedAt: null },
+          ],
+        },
+        errors: [
+          {
+            type: 'INTERNAL',
+            path: ['nodes', 0, 'pushedAt'],
+            message: `Failed for ${TOKEN}`,
+          },
+        ],
+      }),
+    );
+
+    const results = await client.fetchRepositories(
+      targets,
+      new AbortController().signal,
+    );
+
+    expect(results.map((result) => result.status)).toEqual([
+      'failed',
+      'ok',
+      'ok',
+    ]);
+    expect(results[0].data).toBeNull();
+    expect(results[0].reason).toContain('[REDACTED]');
+    expect(results[1].data).toEqual({
+      databaseId: 2,
+      pushedAt: '2025-06-01T00:00:00Z',
+    });
+    expect(results[2].data).toEqual({ databaseId: 3, pushedAt: null });
+    expect(JSON.stringify(results)).not.toContain(TOKEN);
+  });
+
+  it('should combine and redact all errors associated with a node', async () => {
+    const client = makeClient(async () =>
+      json({
+        data: { nodes: [{ databaseId: 1, description: null }] },
+        errors: [
+          {
+            type: 'INTERNAL',
+            path: ['nodes', 0, 'description'],
+            message: `Description failed for ${TOKEN}`,
+          },
+          {
+            type: 'FORBIDDEN',
+            path: ['nodes', 0, 'pushedAt'],
+            message: `Push failed for ${TOKEN}`,
+          },
+        ],
+      }),
+    );
+
+    const [result] = await client.fetchRepositories(
+      [targets[0]],
+      new AbortController().signal,
+    );
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      data: null,
+      reason: 'Description failed for [REDACTED]; Push failed for [REDACTED]',
+    });
+  });
+
+  it.each([
+    {
+      node: { databaseId: 1, description: null },
+      path: ['nodes', 0, 'description'],
+    },
+    { node: null, path: ['nodes', 0, 'description'] },
+    { node: { databaseId: 1 }, path: ['nodes', 0] },
+  ])(
+    'should not treat NOT_FOUND as definitive for $node at $path',
+    async ({ node, path }) => {
+      const client = makeClient(async () =>
+        json({
+          data: { nodes: [node] },
+          errors: [
+            { type: 'NOT_FOUND', path, message: `Missing for ${TOKEN}` },
+          ],
+        }),
+      );
+
+      const [result] = await client.fetchRepositories(
+        [targets[0]],
+        new AbortController().signal,
+      );
+
+      expect(result).toMatchObject({
+        status: 'failed',
+        data: null,
+        reason: 'Missing for [REDACTED]',
+      });
+    },
+  );
+
+  it('should redact definitive node absence reasons', async () => {
+    const client = makeClient(async () =>
+      json({
+        data: { nodes: [null] },
+        errors: [
+          {
+            type: 'NOT_FOUND',
+            path: ['nodes', 0],
+            message: `Missing for ${TOKEN}`,
+          },
+        ],
+      }),
+    );
+    const [result] = await client.fetchRepositories(
+      [targets[0]],
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      status: 'not_found',
+      data: null,
+      reason: 'Missing for [REDACTED]',
+    });
+  });
+
+  it.each([
+    { path: undefined },
+    { path: ['viewer'] },
+    { path: ['nodes', 3] },
+    { path: ['nodes', '0'] },
+  ])(
+    'should fail the batch for errors without a reliable target path $path',
+    async ({ path }) => {
+      const client = makeClient(async () =>
+        json({
+          data: {
+            nodes: [{ databaseId: 1 }, { databaseId: 2 }, { databaseId: 3 }],
+          },
+          errors: [
+            { type: 'INTERNAL', path, message: `Global failure for ${TOKEN}` },
+          ],
+        }),
+      );
+      const results = await client.fetchRepositories(
+        targets,
+        new AbortController().signal,
+      );
+      expect(results.map((result) => result.status)).toEqual([
+        'failed',
+        'failed',
+        'failed',
+      ]);
+      expect(results.every((result) => result.data === null)).toBe(true);
+      expect(
+        results.every(
+          (result) => result.reason === 'Global failure for [REDACTED]',
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it('should reject a node whose database id differs from its target', async () => {
+    const client = makeClient(async () =>
+      json({ data: { nodes: [{ databaseId: 2 }] } }),
+    );
+    const [result] = await client.fetchRepositories(
+      [targets[0]],
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      repositoryId: 1,
+      status: 'failed',
+      data: null,
+    });
+    expect(result.reason).toMatch(/databaseId/);
+  });
+
+  it('should preserve legitimate null fields on a valid node without errors', async () => {
+    const node = {
+      databaseId: 1,
+      description: null,
+      pushedAt: null,
+      primaryLanguage: null,
+    };
+    const client = makeClient(async () => json({ data: { nodes: [node] } }));
+    const [result] = await client.fetchRepositories(
+      [targets[0]],
+      new AbortController().signal,
+    );
+    expect(result).toEqual({
+      repositoryId: 1,
+      status: 'ok',
+      data: node,
+      reason: null,
+    });
+  });
+
+  it.each([{}, { data: null }, { data: {} }, { data: { nodes: null } }])(
+    'should redact GraphQL errors when data.nodes is unavailable: %j',
+    async (payload) => {
+      const client = makeClient(async () =>
+        json({
+          ...payload,
+          errors: [
+            { type: 'INTERNAL', message: `Global failure for ${TOKEN}` },
+          ],
+        }),
+      );
+      await expect(
+        client.fetchRepositories(targets, new AbortController().signal),
+      ).rejects.toThrow(
+        'GitHub GraphQL request failed: Global failure for [REDACTED]',
+      );
+    },
+  );
+
   it('should throw when GraphQL returns no data', async () => {
     const client = makeClient(async () =>
       json({

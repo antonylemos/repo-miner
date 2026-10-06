@@ -3,6 +3,7 @@ import {
   type HttpClientOptions,
   isRecord,
   readJson,
+  redact,
 } from './http.js';
 import type {
   EnrichmentClient,
@@ -60,7 +61,11 @@ export function createEnrichmentClient(
         },
         signal,
       );
-      return normalizeNodes(targets, await readJson(response, options.token));
+      return normalizeNodes(
+        targets,
+        await readJson(response, options.token),
+        options.token,
+      );
     },
   };
 }
@@ -68,6 +73,7 @@ export function createEnrichmentClient(
 function normalizeNodes(
   targets: EnrichmentTarget[],
   payload: unknown,
+  token: string,
 ): EnrichmentResult[] {
   if (!isRecord(payload)) {
     throw new Error('GitHub returned an invalid GraphQL response');
@@ -81,14 +87,61 @@ function normalizeNodes(
       .map((error) => String(error.message ?? error.type ?? 'unknown error'))
       .join('; ');
     throw new Error(
-      `GitHub GraphQL request failed: ${messages || 'response has no data.nodes'}`,
+      redact(
+        `GitHub GraphQL request failed: ${messages || 'response has no data.nodes'}`,
+        token,
+      ),
     );
   }
   const nodes = data.nodes;
+  // Only numeric indices into this batch can reliably identify a target.
+  const targetIndex = (error: Record<string, unknown>): number | null => {
+    const path = error.path;
+    if (
+      !Array.isArray(path) ||
+      path[0] !== 'nodes' ||
+      !Number.isInteger(path[1]) ||
+      path[1] < 0 ||
+      path[1] >= targets.length
+    ) {
+      return null;
+    }
+    return path[1];
+  };
+  const globalErrors = errors.filter((error) => targetIndex(error) === null);
 
   return targets.map((target, index): EnrichmentResult => {
     const node = nodes[index];
-    if (isRecord(node) && typeof node.databaseId === 'number') {
+    const nodeErrors = errors.filter((error) => targetIndex(error) === index);
+    const associatedErrors = errors.filter(
+      (error) => targetIndex(error) === null || targetIndex(error) === index,
+    );
+    if (associatedErrors.length > 0) {
+      // A missing field is not proof that the repository itself is absent.
+      const definitiveAbsence =
+        node == null &&
+        globalErrors.length === 0 &&
+        nodeErrors.every(
+          (error) =>
+            error.type === 'NOT_FOUND' &&
+            Array.isArray(error.path) &&
+            error.path.length === 2,
+        );
+      return {
+        repositoryId: target.repositoryId,
+        status: definitiveAbsence ? 'not_found' : 'failed',
+        data: null,
+        reason: redact(
+          associatedErrors
+            .map((error) =>
+              String(error.message ?? error.type ?? 'unknown error'),
+            )
+            .join('; '),
+          token,
+        ),
+      };
+    }
+    if (isRecord(node) && node.databaseId === target.repositoryId) {
       return {
         repositoryId: target.repositoryId,
         status: 'ok',
@@ -96,21 +149,16 @@ function normalizeNodes(
         reason: null,
       };
     }
-    // GraphQL reports per-node failures with a path such as ["nodes", 3].
-    const error = errors.find(
-      (entry) =>
-        Array.isArray(entry.path) &&
-        entry.path[0] === 'nodes' &&
-        entry.path[1] === index,
-    );
-    const reason = error
-      ? String(error.message ?? error.type)
-      : 'GitHub returned no repository for this node id';
     return {
       repositoryId: target.repositoryId,
-      status: error?.type === 'NOT_FOUND' ? 'not_found' : 'failed',
+      status: 'failed',
       data: null,
-      reason,
+      reason: redact(
+        isRecord(node) && typeof node.databaseId === 'number'
+          ? `GitHub returned databaseId ${node.databaseId} for repository ${target.repositoryId}`
+          : 'GitHub returned no repository for this node id',
+        token,
+      ),
     };
   });
 }
