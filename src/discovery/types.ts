@@ -89,7 +89,9 @@ export type StoredCandidate = Candidate & {
   firstSeenAt: string;
   enrichment: Enrichment | null;
 };
-export type StoredHit = SearchHit & {
+/** A retained origin; repository metadata lives on the candidate, not on each hit. */
+export type StoredHit = Omit<SearchHit, 'candidate'> & {
+  candidate: Omit<Candidate, 'metadata'>;
   queryId: string;
   subqueryId: string;
   strategy: Strategy;

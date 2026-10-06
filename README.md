@@ -116,7 +116,7 @@ Cada rodada grava em seu diretório:
 | Arquivo | Conteúdo |
 | --- | --- |
 | `discovery.sqlite` | Fonte de verdade da rodada: catálogo, subconsultas, páginas brutas, candidatos, hits, enriquecimentos e checkpoints. |
-| `candidates.csv` | Um registro por repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at`, sua fonte, a data em que foi observado (`pushed_at_observed_at`), status de enriquecimento e estratégias que o encontraram. |
+| `candidates.csv` | Um registro por repositório, com `scope` (`in_scope`, `out_of_scope_temporal`, `unknown`), `pushed_at`, sua fonte, a data em que foi observado (`pushed_at_observed_at`), status de enriquecimento e estratégias que o encontraram. O `metadata_json` traz só os campos de análise da busca (`description`, `topics`, `language`, `license`, `created_at`, `pushed_at`, `size`, `stargazers_count`, `forks_count`, `archived`, `fork`, `default_branch`, `homepage`); os metadados completos ficam no `discovery.sqlite`. |
 | `discovery-hits.csv` | Cada ocorrência de um repositório numa subconsulta, com consulta, subconsulta, `q` efetivo, endpoint, data de coleta e caminho do arquivo. |
 | `coverage.json` | Cobertura por consulta e por subconsulta, contagens por `scope` e por estratégia, interseções entre estratégias e status do enriquecimento. |
 | `report.md` | Diagnóstico legível da rodada, incluindo subconsultas saturadas e limitações. |

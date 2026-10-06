@@ -57,6 +57,8 @@ export interface DiscoveryStore {
   finish(result: RunResult): void;
   /** Reads deduplicated repositories with their enrichment, if any. */
   readCandidates(): StoredCandidate[];
+  /** Yields the same rows as readCandidates one at a time, for exports larger than memory. */
+  iterateCandidates(): Iterable<StoredCandidate>;
   /** Reads every retained discovery origin, including code paths and fetch times. */
   readHits(): StoredHit[];
   /** Aggregates page and checkpoint facts for every subquery. */
@@ -220,6 +222,46 @@ export function openStore(path: string): DiscoveryStore {
       reason,
     };
   };
+  function* iterateCandidates(): Generator<StoredCandidate> {
+    const rows = database
+      .prepare(
+        `SELECT c.repository_id, c.node_id, c.full_name, c.url, c.metadata_json, c.first_seen_at,
+                e.status, e.fetched_at, e.data_json, e.reason
+         FROM candidates c LEFT JOIN enrichments e ON e.repository_id = c.repository_id
+         ORDER BY c.repository_id`,
+      )
+      .iterate() as Iterable<StoredRow>;
+    for (const row of rows) {
+      yield {
+        id: Number(row.repository_id),
+        nodeId: String(row.node_id),
+        fullName: String(row.full_name),
+        url: String(row.url),
+        metadata: JSON.parse(String(row.metadata_json)) as Record<
+          string,
+          unknown
+        >,
+        firstSeenAt: String(row.first_seen_at),
+        enrichment:
+          row.status === null
+            ? null
+            : {
+                status: row.status as EnrichmentStatus,
+                fetchedAt:
+                  row.fetched_at === null ? null : String(row.fetched_at),
+                data:
+                  row.data_json === null
+                    ? null
+                    : (JSON.parse(String(row.data_json)) as Record<
+                        string,
+                        unknown
+                      >),
+                reason: row.reason === null ? null : String(row.reason),
+              },
+      };
+    }
+  }
+
   const COVERAGE_SELECT = `
     SELECT s.subquery_id, s.query_id, c.state, c.reason
     FROM subqueries s LEFT JOIN checkpoints c ON c.subquery_id = s.subquery_id`;
@@ -443,49 +485,17 @@ export function openStore(path: string): DiscoveryStore {
     },
 
     readCandidates() {
-      const rows = database
-        .prepare(
-          `SELECT c.repository_id, c.node_id, c.full_name, c.url, c.metadata_json, c.first_seen_at,
-                  e.status, e.fetched_at, e.data_json, e.reason
-           FROM candidates c LEFT JOIN enrichments e ON e.repository_id = c.repository_id
-           ORDER BY c.repository_id`,
-        )
-        .all() as StoredRow[];
-      return rows.map((row) => ({
-        id: Number(row.repository_id),
-        nodeId: String(row.node_id),
-        fullName: String(row.full_name),
-        url: String(row.url),
-        metadata: JSON.parse(String(row.metadata_json)) as Record<
-          string,
-          unknown
-        >,
-        firstSeenAt: String(row.first_seen_at),
-        enrichment:
-          row.status === null
-            ? null
-            : {
-                status: row.status as EnrichmentStatus,
-                fetchedAt:
-                  row.fetched_at === null ? null : String(row.fetched_at),
-                data:
-                  row.data_json === null
-                    ? null
-                    : (JSON.parse(String(row.data_json)) as Record<
-                        string,
-                        unknown
-                      >),
-                reason: row.reason === null ? null : String(row.reason),
-              },
-      }));
+      return [...iterateCandidates()];
     },
+
+    iterateCandidates,
 
     readHits() {
       const rows = database
         .prepare(
           `SELECT h.query_id, h.subquery_id, q.strategy, q.endpoint, s.q_effective,
                   h.repository_id, c.node_id, h.path, h.url, h.full_name,
-                  h.repository_url, h.metadata_json, h.fetched_at
+                  h.repository_url, h.fetched_at
            FROM hits h
            JOIN subqueries s ON s.subquery_id = h.subquery_id
            JOIN queries q ON q.query_id = h.query_id
@@ -505,10 +515,6 @@ export function openStore(path: string): DiscoveryStore {
           nodeId: String(row.node_id),
           fullName: String(row.full_name),
           url: String(row.repository_url),
-          metadata: JSON.parse(String(row.metadata_json)) as Record<
-            string,
-            unknown
-          >,
         },
         path: String(row.path) || null,
         url: String(row.url),

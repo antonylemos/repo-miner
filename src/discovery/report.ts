@@ -1,9 +1,18 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  createReadStream,
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { candidateScope, type EffectivePush, effectivePush } from './scope.js';
+import { candidateScope, effectivePush } from './scope.js';
 import type { DiscoveryStore } from './storage.js';
 import type {
   Coverage,
@@ -37,6 +46,22 @@ const CANDIDATE_COLUMNS = [
   'metadata_json',
   'enrichment_json',
 ];
+/** Search metadata kept in candidates.csv; API URL templates and `owner` stay only in SQLite. */
+const METADATA_FIELDS = [
+  'description',
+  'topics',
+  'language',
+  'license',
+  'created_at',
+  'pushed_at',
+  'size',
+  'stargazers_count',
+  'forks_count',
+  'archived',
+  'fork',
+  'default_branch',
+  'homepage',
+];
 const HIT_COLUMNS = [
   'query_id',
   'subquery_id',
@@ -49,12 +74,11 @@ const HIT_COLUMNS = [
   'repository_url',
   'path',
   'url',
-  'metadata_json',
 ];
 
+/** The per-candidate facts the summaries need; the full record is only streamed to CSV. */
 type CandidateRow = {
-  candidate: StoredCandidate;
-  push: EffectivePush;
+  id: number;
   scope: Scope;
   strategies: Strategy[];
 };
@@ -95,7 +119,21 @@ export async function exportRun(
   const hits = store.readHits();
   const coverage = store.readCoverage();
   const enrichment = store.readEnrichmentCounts();
-  const rows = candidateRows(store.readCandidates(), hits, run.pushedSince);
+
+  const candidatesPath = join(outputDir, 'candidates.csv');
+  onProgress(1, EXPORT_STEPS, 'candidates.csv');
+  const rows: CandidateRow[] = [];
+  await writeCsv(
+    candidatesPath,
+    CANDIDATE_COLUMNS,
+    candidateRecords(
+      store.iterateCandidates(),
+      strategiesByCandidate(hits),
+      run.pushedSince,
+      rows,
+    ),
+  );
+
   const inScope = rows.filter((row) => row.scope === 'in_scope');
   const byScope = Object.fromEntries(
     SCOPES.map((scope) => [
@@ -110,30 +148,9 @@ export async function exportRun(
   const overlap = intersections(inScope);
   const queries = queryCoverage(store.getCatalog().queries, coverage, hits);
 
-  const candidatesPath = join(outputDir, 'candidates.csv');
-  onProgress(1, EXPORT_STEPS, 'candidates.csv');
-  writeCsv(
-    candidatesPath,
-    CANDIDATE_COLUMNS,
-    rows.map((row) => [
-      row.candidate.id,
-      row.candidate.fullName,
-      row.candidate.url,
-      row.scope,
-      row.push.pushedAt ?? '',
-      row.push.source ?? '',
-      row.push.observedAt ?? '',
-      row.candidate.enrichment?.status ?? '',
-      row.strategies.join(';'),
-      JSON.stringify(row.candidate.metadata),
-      row.candidate.enrichment?.data
-        ? JSON.stringify(row.candidate.enrichment.data)
-        : '',
-    ]),
-  );
   const hitsPath = join(outputDir, 'discovery-hits.csv');
   onProgress(2, EXPORT_STEPS, 'discovery-hits.csv');
-  writeCsv(
+  await writeCsv(
     hitsPath,
     HIT_COLUMNS,
     [...hits]
@@ -150,7 +167,6 @@ export async function exportRun(
         hit.candidate.url,
         hit.path ?? '',
         hit.url,
-        JSON.stringify(hit.candidate.metadata),
       ]),
   );
 
@@ -192,34 +208,63 @@ export async function exportRun(
   onProgress(5, EXPORT_STEPS, 'manifest.json');
   writeFileSync(
     manifestPath,
-    `${JSON.stringify(buildManifest(run, exportedFiles), null, 2)}\n`,
+    `${JSON.stringify(await buildManifest(run, exportedFiles), null, 2)}\n`,
     'utf8',
   );
   onProgress(EXPORT_STEPS, EXPORT_STEPS, '');
   return { files: [...exportedFiles, manifestPath] };
 }
 
-function candidateRows(
-  candidates: StoredCandidate[],
-  hits: StoredHit[],
-  pushedSince: string,
-): CandidateRow[] {
+function strategiesByCandidate(hits: StoredHit[]): Map<number, Set<Strategy>> {
   const strategiesById = new Map<number, Set<Strategy>>();
   for (const hit of hits) {
     const found = strategiesById.get(hit.candidate.id) ?? new Set<Strategy>();
     found.add(hit.strategy);
     strategiesById.set(hit.candidate.id, found);
   }
-  return candidates.map((candidate) => {
+  return strategiesById;
+}
+
+/** Yields one CSV record per candidate and appends its summary to `rows`, so the full records are never held at once. */
+function* candidateRecords(
+  candidates: Iterable<StoredCandidate>,
+  strategiesById: Map<number, Set<Strategy>>,
+  pushedSince: string,
+  rows: CandidateRow[],
+): Generator<unknown[]> {
+  for (const candidate of candidates) {
     const push = effectivePush(candidate);
+    const scope = candidateScope(push, pushedSince);
     const found = strategiesById.get(candidate.id) ?? new Set<Strategy>();
-    return {
-      candidate,
-      push,
-      scope: candidateScope(push, pushedSince),
-      strategies: STRATEGIES.filter((strategy) => found.has(strategy)),
-    };
-  });
+    const strategies = STRATEGIES.filter((strategy) => found.has(strategy));
+    rows.push({ id: candidate.id, scope, strategies });
+    yield [
+      candidate.id,
+      candidate.fullName,
+      candidate.url,
+      scope,
+      push.pushedAt ?? '',
+      push.source ?? '',
+      push.observedAt ?? '',
+      candidate.enrichment?.status ?? '',
+      strategies.join(';'),
+      JSON.stringify(exportedMetadata(candidate.metadata)),
+      candidate.enrichment?.data
+        ? JSON.stringify(candidate.enrichment.data)
+        : '',
+    ];
+  }
+}
+
+function exportedMetadata(
+  metadata: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    METADATA_FIELDS.filter((field) => field in metadata).map((field) => [
+      field,
+      metadata[field],
+    ]),
+  );
 }
 
 function strategyCounts(rows: CandidateRow[]): Record<Strategy, number> {
@@ -385,7 +430,7 @@ function reportLines(data: {
   ];
 }
 
-function buildManifest(run: Run, exportedFiles: string[]) {
+async function buildManifest(run: Run, exportedFiles: string[]) {
   const root = findPackageRoot();
   const git = readGit(root);
   const packageInfo = root
@@ -427,10 +472,12 @@ function buildManifest(run: Run, exportedFiles: string[]) {
           reason: 'Git metadata is unavailable',
         },
     sha256: Object.fromEntries(
-      exportedFiles.map((file) => [
-        file.split('/').at(-1),
-        sha256(readFileSync(file)),
-      ]),
+      await Promise.all(
+        exportedFiles.map(async (file) => [
+          file.split('/').at(-1),
+          await sha256File(file),
+        ]),
+      ),
     ),
   };
 }
@@ -480,11 +527,23 @@ function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function writeCsv(path: string, columns: string[], rows: unknown[][]): void {
-  const text = [columns, ...rows]
-    .map((row) => row.map(csvField).join(','))
-    .join('\n');
-  writeFileSync(path, `${text}\n`, 'utf8');
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash('sha256');
+  await pipeline(createReadStream(path), hash);
+  return hash.digest('hex');
+}
+
+/** Streams rows to disk so the file size is not bounded by the maximum string length. */
+async function writeCsv(
+  path: string,
+  columns: string[],
+  rows: Iterable<unknown[]>,
+): Promise<void> {
+  function* lines() {
+    yield `${columns.map(csvField).join(',')}\n`;
+    for (const row of rows) yield `${row.map(csvField).join(',')}\n`;
+  }
+  await pipeline(Readable.from(lines()), createWriteStream(path, 'utf8'));
 }
 
 function compareHits(left: StoredHit, right: StoredHit): number {

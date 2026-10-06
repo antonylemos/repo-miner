@@ -261,6 +261,53 @@ describe('exportRun', () => {
     expect(report).not.toMatch(/web components|micro-?frontends?|\bMFE\b/i);
   });
 
+  it('should export only the analysis fields of the search metadata', async () => {
+    const { directory, store, save } = setup();
+    save('query-a', [
+      hit(1, {
+        metadata: {
+          pushed_at: '2025-01-01T00:00:00Z',
+          description: 'shell',
+          topics: ['microfrontends'],
+          stargazers_count: 7,
+          fork: false,
+          owner: { login: 'org' },
+          issues_url: 'https://api.github.com/repos/org/repo-1/issues{/number}',
+        },
+      }),
+    ]);
+
+    await exportRun(store, directory);
+
+    expect(
+      JSON.parse(readCsv(directory, 'candidates.csv')[0].metadata_json),
+    ).toEqual({
+      description: 'shell',
+      topics: ['microfrontends'],
+      pushed_at: '2025-01-01T00:00:00Z',
+      stargazers_count: 7,
+      fork: false,
+    });
+  });
+
+  it('should keep repository metadata out of the hits export', async () => {
+    const { directory, store, save } = setup();
+    save('query-a', [hit(1, { metadata: { description: 'x'.repeat(100) } })]);
+
+    await exportRun(store, directory);
+
+    const [header] = readFileSync(
+      join(directory, 'discovery-hits.csv'),
+      'utf8',
+    ).split('\n');
+    expect(header).toBe(
+      'query_id,subquery_id,strategy,endpoint,q_effective,fetched_at,candidate_id,full_name,repository_url,path,url',
+    );
+    expect(readCsv(directory, 'candidates.csv')[0].metadata_json).toContain(
+      'x'.repeat(100),
+    );
+  });
+
   it('should report each export step until all files are written', async () => {
     const { directory, store } = setup();
     const steps: string[] = [];
