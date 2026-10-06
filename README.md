@@ -58,7 +58,11 @@ pnpm run cli discover --resume data/discovery/rodada-001
 pnpm run cli report --run data/discovery/rodada-001
 ```
 
-O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`, e bancos criados por versões anteriores do formato não são abertos.
+O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`. Rodadas existentes no formato SQLite v2 continuam aceitas; formatos anteriores já incompatíveis continuam rejeitados.
+
+As buscas de repositórios e de código executam em paralelo; dentro de cada endpoint, as subconsultas e suas páginas seguem em sequência. O enriquecimento GraphQL processa lotes completos durante as buscas e os candidatos restantes ao final.
+
+`report` recupera a análise de uma rodada v2 a partir dos hits REST já gravados, sem rede nem token. Ele regenera os arquivos, mas conserva o estado persistido da rodada: só `discover --resume` recalcula e grava esse estado. Erros antigos que não foram armazenados não podem ser reconstruídos; um enriquecimento antigo `ok` com push nulo não ganha um erro inventado nem é reenviado automaticamente.
 
 ## Catálogo
 
@@ -122,11 +126,19 @@ Cada rodada grava em seu diretório:
 | `report.md` | Diagnóstico legível da rodada, incluindo subconsultas saturadas e limitações. |
 | `manifest.json` | Identificação da rodada, recorte, data de expansão, hash do catálogo, versões, revisão e estado da árvore git (`git.dirty`) e SHA-256 dos arquivos exportados. |
 
+Os metadados originais do primeiro encontro e os hits permanecem preservados no banco. Para análise, a ferramenta projeta uma única observação REST de repositório: prefere push válido e, entre observações equivalentes, a menor data de coleta, com desempate por subconsulta e caminho. Todos os campos dessa projeção vêm da mesma observação; sem hit REST, usa o primeiro encontro. `pushed_at_observed_at` indica quando a fonte efetiva do push foi coletada, que pode diferir de `first_seen_at`.
+
+Um push válido de enriquecimento GraphQL `ok` tem precedência sobre REST, mesmo se foi observado antes. Se for nulo ou inválido, vale o push válido da busca; sem data válida, o recorte é `unknown`. Nulo legítimo num nó GraphQL válido e sem erro continua `ok`. Erros parciais afetam o nó associado, preservando irmãos sem erro; erros sem caminho confiável afetam todo o lote. `NOT_FOUND` só é definitivo quando o nó está ausente e o erro aponta diretamente para ele, não para um campo. Os motivos de erro são sanitizados para ocultar a credencial.
+
+`coverage.json.enrichment` e `candidates.csv.enrichment_status` conservam os estados históricos registrados. `enrichmentRequired` conta `pending` e `failed` ainda necessários; `enrichmentSuperseded` conta esses estados dispensados por um push REST válido. Uma falha histórica dispensada permanece auditável e não exige nova chamada GraphQL nem impede a conclusão.
+
+Cada exportação lê uma fotografia consistente do SQLite, incluindo CSV, cobertura e estado da rodada. Durante a coleta, `report` pode exportar enquanto outra conexão grava páginas; novas gravações aparecem na exportação seguinte. Enquanto o banco estiver aberto, podem existir `discovery.sqlite-wal` e `discovery.sqlite-shm`, arquivos auxiliares do modo WAL. Use no máximo um processo de descoberta gravando e um exporter ativo por diretório; evite sobrepor `report` à exportação final de `discover`.
+
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ficou `pending` ou `failed`.
+- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ainda necessário ficou `pending` ou `failed`.
 - `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato anterior, ou falha de requisição no dry-run.
-- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados.
+- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento ainda necessário pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados.
 
 ## Limitações
 

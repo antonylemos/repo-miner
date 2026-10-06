@@ -28,6 +28,8 @@ Você descreve num catálogo **o que buscar e por quê**. O repo-miner transform
                                        triagem humana
 ```
 
+O diagrama mostra o caminho dos dados. Na execução, as duas buscas e o enriquecimento podem se sobrepor, conforme as etapas 3 e 5.
+
 ## Vocabulário
 
 | Termo | O que significa aqui |
@@ -87,7 +89,7 @@ Ao iniciar, a ferramenta:
 
 ### Etapa 3 — Buscar e paginar
 
-As subconsultas são executadas uma de cada vez, na ordem do catálogo. Para cada uma, a ferramenta pede páginas de 100 resultados ao GitHub, até no máximo 10 páginas (1.000 resultados, o limite da API).
+Os endpoints de busca de repositórios e de código executam em paralelo. Dentro de cada endpoint, as subconsultas seguem a ordem do catálogo, uma de cada vez, e suas páginas também são sequenciais. Para cada subconsulta, a ferramenta pede páginas de 100 resultados ao GitHub, até no máximo 10 páginas (1.000 resultados, o limite da API). O GraphQL processa lotes completos de enriquecimento durante as buscas; os candidatos restantes são tratados ao final.
 
 Para não ser bloqueada, ela respeita intervalos mínimos entre pedidos: 2 segundos na busca de repositórios, 6 segundos na busca de código e 1 segundo no GraphQL. Falhas de rede e erros do servidor são tentados de novo até três vezes, com espera crescente. Quando o GitHub avisa que o limite de uso foi atingido, a ferramenta espera o tempo indicado por ele (ou um minuto, se ele não indicar) antes de tentar outra vez.
 
@@ -110,11 +112,15 @@ Nessa gravação, os dados são organizados em dois níveis:
 
 É isso que permite responder "este repositório foi encontrado pela terminologia, pela tecnologia ou pelas duas?" sem contar ninguém duas vezes. A página bruta também é guardada, com os caminhos de arquivo normalizados, como fotografia do que o GitHub devolveu naquele momento.
 
+Para análise e exportação, uma projeção seleciona um único hit REST de busca de repositórios, sem regravar os metadados originais do candidato. Ela prefere observações com `pushed_at` válido (string não vazia que representa uma data finita); entre observações com a mesma validade, escolhe a menor data de coleta (`fetched_at`), desempata por `subquery_id` e depois por `path`. Nome, URL e todos os metadados vêm dessa mesma observação. Sem hit REST, usa o primeiro encontro. Assim, um hit de código que chega primeiro não impede o uso posterior de metadados REST completos.
+
+`first_seen_at` continua sendo a data do primeiro encontro. A data da observação selecionada é usada em `pushed_at_observed_at` quando a fonte efetiva do push é a busca; quando é enriquecimento, usa a data de coleta do GraphQL.
+
 ### Etapa 5 — Enriquecer metadados
 
 A busca de repositórios já devolve a data do último push, a linguagem, o tamanho e se o repositório é fork ou está arquivado. A busca de código não devolve: ela informa só o arquivo e um resumo do repositório.
 
-Por isso, depois das buscas, os candidatos sem data de push entram numa fila de enriquecimento. A ferramenta consulta a API GraphQL em lotes de até 100 repositórios e grava, à parte e sem sobrescrever os metadados da busca, a data de criação, a do último push, os indicadores de fork, arquivado, template e espelho, o tamanho, a linguagem principal, as estrelas, os tópicos, a branch padrão e a descrição.
+Por isso, candidatos sem push de busca válido entram numa fila de enriquecimento. A ferramenta consulta a API GraphQL em lotes de até 100 repositórios: lotes completos enquanto as buscas continuam e os restantes ao final. Ela grava, à parte e sem sobrescrever os metadados da busca, a data de criação, a do último push, os indicadores de fork, arquivado, template e espelho, o tamanho, a linguagem principal, as estrelas, os tópicos, a branch padrão e a descrição.
 
 | Resultado | Significado |
 | --- | --- |
@@ -122,12 +128,16 @@ Por isso, depois das buscas, os candidatos sem data de push entram numa fila de 
 | `not_found` | O repositório foi removido ou ficou privado. Situação definitiva. |
 | `failed` | Falha temporária. Será tentado de novo na retomada. |
 
+Um campo legitimamente nulo, inclusive `pushedAt`, não é uma falha: se o nó válido não tem erro associado, permanece `ok`. Numa resposta parcial, um erro em um campo ou nó marca apenas o candidato afetado como `failed`; irmãos sem erro continuam `ok`. Erros sem caminho que identifique confiavelmente um alvo afetam o lote inteiro. `NOT_FOUND` só gera `not_found` quando o nó está ausente e o caminho aponta diretamente para ele (`nodes`, índice); `NOT_FOUND` em campo aninhado é `failed`. Um nó ausente sem prova definitiva de remoção também é `failed`. Os motivos armazenados ocultam o token.
+
+Se uma observação REST com push válido chegar depois de um enriquecimento `pending` ou `failed`, ele deixa de ser necessário e não é reenviado. O registro histórico e seu motivo são preservados; uma chamada GraphQL já em andamento também tem seu resultado conservado. Cada candidato necessário é tentado no máximo uma vez por invocação; falhas restantes aguardam a retomada.
+
 ### Etapa 6 — Aplicar o recorte temporal
 
 Cada candidato recebe um `scope`, calculado no momento da exportação e nunca gravado no banco, para que uma mudança de regra não exija refazer a coleta:
 
-1. Se o enriquecimento deu certo, vale a data de push obtida por ele.
-2. Senão, vale a data de push informada pela busca.
+1. Se o enriquecimento está `ok` e seu push é válido, vale essa data, mesmo se foi observada antes da REST.
+2. Senão (inclusive push enriquecido nulo ou inválido), vale o push válido da observação de busca selecionada.
 3. Com uma data em mãos: `in_scope` se ela é igual ou posterior ao recorte, `out_of_scope_temporal` se é anterior.
 4. Sem data utilizável: `unknown`.
 
@@ -146,6 +156,10 @@ Candidatos fora do recorte **não são apagados**: continuam nas exportações, 
 
 Ao final, e também quando a rodada é interrompida, a ferramenta lê o banco e gera os arquivos abaixo. `report` regenera os mesmos arquivos a qualquer momento, sem token.
 
+Todas as leituras de uma exportação usam a mesma fotografia do SQLite: CSV, cobertura, catálogo, resumo de enriquecimento e estado da rodada refletem um único instante. O CSV continua sendo escrito por streaming. Durante a coleta, outra conexão pode confirmar páginas sem bloquear esse cursor; essas páginas aparecem na exportação seguinte. Uma falha de escrita encerra o cursor e libera a transação de leitura, permitindo tentar exportar novamente.
+
+O banco em arquivo usa WAL e pode manter `discovery.sqlite-wal` e `discovery.sqlite-shm` enquanto estiver aberto. Eles são arquivos auxiliares do SQLite. Por diretório, mantenha no máximo um writer de descoberta e um exporter ativo. `report` durante a coleta é suportado; duas exportações simultâneas para os mesmos arquivos, inclusive `report` sobreposto à exportação final de `discover`, ficam fora desse limite.
+
 | Arquivo | Para que serve | Como ler |
 | --- | --- | --- |
 | `candidates.csv` | Lista de trabalho para a triagem. | Uma linha por repositório. Filtre por `scope = in_scope`. A coluna `strategies` mostra quais procedimentos o encontraram (`terminology;technology`, por exemplo). |
@@ -157,6 +171,8 @@ Ao final, e também quando a rodada é interrompida, a ferramenta lê o banco e 
 
 As interseções do relatório são calculadas só sobre candidatos `in_scope` e aparecem em três formas: exclusivas (encontrados por uma única estratégia), par a par e a interseção das três.
 
+`coverage.json.enrichment` conta os estados históricos `pending`, `ok`, `not_found` e `failed`; o CSV mantém esse histórico em `enrichment_status`. Os campos `enrichmentRequired` e `enrichmentSuperseded` contam separadamente `pending` e `failed` ainda necessários e dispensados por push REST válido. O relatório Markdown também mostra essa distinção. Assim, uma falha histórica pode continuar visível numa rodada sem pendências efetivas.
+
 Os CSV preservam acentos e escapam vírgulas, aspas e quebras de linha conforme o padrão, então abrem corretamente em planilhas e em `pandas`.
 
 ### Etapa 8 — Interromper e retomar
@@ -167,9 +183,13 @@ Uma rodada pode levar horas. Se ela for interrompida (Ctrl+C, queda de rede, lim
 pnpm run cli discover --resume data/discovery/mfe-rodada-001
 ```
 
-A retomada usa o catálogo e as subconsultas gravados na rodada, nunca um arquivo novo. Ela continua cada subconsulta `failed` ou pendente a partir da página salva e refaz apenas os enriquecimentos pendentes ou com falha. Subconsultas `complete` ou `partial` não são buscadas de novo. Para mudar consultas ou refazer uma subconsulta saturada, ajuste o catálogo e crie uma rodada nova, num diretório novo.
+A retomada usa o catálogo e as subconsultas gravados na rodada, nunca um arquivo novo. Ela continua cada subconsulta `failed` ou pendente a partir da página salva e refaz apenas os enriquecimentos pendentes ou com falha ainda necessários. Numa resposta GraphQL parcial, só os candidatos afetados e ainda necessários são reenviados. Subconsultas `complete` ou `partial` não são buscadas de novo. Para mudar consultas ou refazer uma subconsulta saturada, ajuste o catálogo e crie uma rodada nova, num diretório novo.
 
-A rodada só é considerada completa (código `0`) quando todas as subconsultas estão `complete` e nenhum enriquecimento está pendente ou com falha. Caso contrário, ela é parcial (código `2`), e o relatório diz o que falta.
+A rodada só é considerada completa (código `0`) quando todas as subconsultas estão `complete` e nenhum enriquecimento ainda necessário está pendente ou com falha. Registros históricos dispensados por REST não impedem a conclusão. Caso contrário, ela é parcial (código `2`), e o relatório diz o que falta.
+
+Rodadas SQLite v2 existentes continuam aceitas. Executar `report` recupera metadados a partir dos hits REST já armazenados e recalcula o recorte e o diagnóstico atual, sem rede nem token. Ele não altera o estado persistido da rodada: uma rodada antiga pode continuar com `run.state = partial` mesmo sem pendências necessárias. Só `discover --resume` recalcula e grava esse estado; se todas as buscas terminaram e a REST dispensa as falhas, isso ocorre sem novas chamadas ao GitHub.
+
+A recuperação usa apenas informações registradas. Erros GraphQL antigos que não foram armazenados são irrecuperáveis; um registro antigo `ok` com `pushedAt: null` não recebe um motivo de erro inventado nem é reenviado automaticamente. Formatos anteriores já rejeitados continuam incompatíveis e exigem uma rodada nova.
 
 ### Etapa 9 — Depois da descoberta
 
@@ -203,7 +223,7 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 3. **Busca.** Suponha que o trimestre tenha 140 resultados: a ferramenta busca 2 páginas (100 + 40), grava cada uma com seu checkpoint e marca a subconsulta como `complete`.
 4. **Deduplicação.** Um desses resultados, um repositório fictício `exemplo/shell-app`, também aparece na consulta de código `"single-spa" filename:package.json`, no arquivo `apps/shell/package.json`. Ele continua sendo um único candidato, agora com dois hits.
 5. **Enriquecimento.** Como ele foi encontrado primeiro pela busca de repositórios, que traz a data de push, não precisa ser enriquecido. Se tivesse aparecido só na busca de código, entraria na fila do GraphQL.
-6. **Recorte.** Com último push em março de 2025, ele fica `in_scope`, com fonte `search`.
+6. **Recorte.** Com `pushed_at = 2025-05-01T00:00:00Z` e recorte `2025-04-01`, ele fica `in_scope`, com fonte `search`. Um último push em março de 2025 ficaria `out_of_scope_temporal`.
 7. **Exportação.** Em `candidates.csv`, ele aparece uma vez, com `strategies = technology` (as duas consultas são de tecnologia). Em `discovery-hits.csv`, aparece duas vezes, uma por subconsulta, cada uma com seu texto exato e sua data de coleta.
 8. **Triagem.** A partir daqui, um pesquisador verifica se `exemplo/shell-app` tem de fato duas ou mais unidades de frontend compostas por single-spa, e o classifica.
 
@@ -212,7 +232,7 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | Dado | Onde fica | Tratamento |
 | --- | --- | --- |
 | Resposta de cada página | `discovery.sqlite`, tabela `pages` | Guardada como recebida, com caminhos de arquivo normalizados; nunca é sobrescrita, mesmo se a página for pedida de novo. |
-| Repositório | Tabela `candidates` | Deduplicado pelo id numérico; mantém os metadados do primeiro encontro e a data desse encontro. |
+| Repositório | Tabela `candidates` | Deduplicado pelo id numérico; mantém os metadados originais do primeiro encontro e sua data. A leitura para análise projeta uma única observação REST dos hits, com sua própria data de observação. |
 | Ocorrência | Tabela `hits` | Uma por subconsulta, repositório e caminho; guarda a consulta de origem e a data de coleta. |
 | Metadados extras | Tabela `enrichments` | Separados dos metadados da busca, com status, data e motivo de falha. |
 | Recorte | Calculado na exportação | Derivado das datas disponíveis; nunca gravado, para poder ser recalculado. |
@@ -264,9 +284,9 @@ pnpm run build      # compila para dist/
 
 | Código | Significado |
 | --- | --- |
-| `0` | Ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum enriquecimento `pending` ou `failed`. |
+| `0` | Ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum enriquecimento ainda necessário `pending` ou `failed`. |
 | `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato anterior, ou falha de requisição no dry-run. |
-| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados. |
+| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento ainda necessário pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados. |
 
 ## Limites de interpretação
 
