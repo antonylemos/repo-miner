@@ -7,10 +7,11 @@ import { createEnrichmentClient } from '../discovery/enrichment.js';
 import { expandCatalog } from '../discovery/expansion.js';
 import { createGitHubClient } from '../discovery/github.js';
 import type { HttpClientOptions } from '../discovery/http.js';
-import { exportRun } from '../discovery/report.js';
+import { type ExportProgress, exportRun } from '../discovery/report.js';
 import { runDiscovery } from '../discovery/runner.js';
 import type { DiscoveryStore } from '../discovery/storage.js';
 import type { Catalog } from '../discovery/types.js';
+import { createProgress, type Progress } from './progress.js';
 
 const RESULT_CAP = 1000;
 
@@ -61,11 +62,14 @@ export async function main(
       }
       const { openStore } = await import('../discovery/storage.js');
       const store = openStore(databasePath);
+      const progress = createProgress();
       try {
-        await exportRun(store, options.run);
+        await exportRun(store, options.run, exportProgress(progress));
       } finally {
+        progress.done();
         store.close();
       }
+      console.log(`Relatório exportado em ${options.run}`);
     });
 
   try {
@@ -113,12 +117,19 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function clientOptions(token: string): HttpClientOptions {
+function clientOptions(token: string, progress: Progress): HttpClientOptions {
   return {
     token,
     fetchFn: globalThis.fetch,
     now: Date.now,
-    sleep: sleepAbortably,
+    sleep: async (ms, signal) => {
+      progress.wait(ms);
+      try {
+        await sleepAbortably(ms, signal);
+      } finally {
+        progress.wait(0);
+      }
+    },
   };
 }
 
@@ -142,28 +153,36 @@ async function withInterrupt<T>(
 
 async function dryRun(queriesPath: string, token: string): Promise<number> {
   const subqueries = expandCatalog(readCatalog(queriesPath), today());
-  const client = createGitHubClient(clientOptions(token));
-  return withInterrupt(token, async (signal) => {
-    console.log(
-      '| query_id | subquery_id | q_effective | total | incompleto | saturada |',
-    );
-    console.log('| --- | --- | --- | ---: | --- | --- |');
-    let saturated = 0;
-    let sum = 0;
-    for (const subquery of subqueries) {
-      const { totalCount, incomplete } = await client.count(subquery, signal);
-      const over = totalCount > RESULT_CAP;
-      if (over) saturated += 1;
-      sum += totalCount;
+  const progress = createProgress();
+  const client = createGitHubClient(clientOptions(token, progress));
+  try {
+    return await withInterrupt(token, async (signal) => {
+      progress.start('Contando', subqueries.length);
       console.log(
-        `| ${subquery.queryId} | ${subquery.id} | ${escapeCell(subquery.q)} | ${totalCount} | ${incomplete ? 'sim' : 'não'} | ${over ? '**sim**' : ''} |`,
+        '| query_id | subquery_id | q_effective | total | incompleto | saturada |',
       );
-    }
-    console.log(
-      `\nSubconsultas: ${subqueries.length}. Saturadas: ${saturated}. Soma dos totais: ${sum}.`,
-    );
-    return saturated > 0 ? 2 : 0;
-  });
+      console.log('| --- | --- | --- | ---: | --- | --- |');
+      let saturated = 0;
+      let sum = 0;
+      for (const [index, subquery] of subqueries.entries()) {
+        const { totalCount, incomplete } = await client.count(subquery, signal);
+        progress.update(index + 1, subquery.id);
+        const over = totalCount > RESULT_CAP;
+        if (over) saturated += 1;
+        sum += totalCount;
+        console.log(
+          `| ${subquery.queryId} | ${subquery.id} | ${escapeCell(subquery.q)} | ${totalCount} | ${incomplete ? 'sim' : 'não'} | ${over ? '**sim**' : ''} |`,
+        );
+      }
+      progress.done();
+      console.log(
+        `\nSubconsultas: ${subqueries.length}. Saturadas: ${saturated}. Soma dos totais: ${sum}.`,
+      );
+      return saturated > 0 ? 2 : 0;
+    });
+  } finally {
+    progress.done();
+  }
 }
 
 async function discover(
@@ -183,6 +202,7 @@ async function discover(
     : readCatalog(command.queries as string);
 
   let store: DiscoveryStore | undefined;
+  const progress = createProgress();
   try {
     return await withInterrupt(token, async (signal) => {
       const { openStore } = await import('../discovery/storage.js');
@@ -202,30 +222,51 @@ async function discover(
         store = openStore(databasePath);
       }
 
-      const options = clientOptions(token);
+      const options = clientOptions(token, progress);
+      let phase = '';
       const result = await runDiscovery({
         store,
         client: createGitHubClient(options),
         enrichmentClient: createEnrichmentClient(options),
         signal,
         now: () => new Date().toISOString(),
+        onProgress: (event) => {
+          if (event.phase !== phase) {
+            phase = event.phase;
+            progress.start(
+              phase === 'search' ? 'Buscando' : 'Enriquecendo',
+              event.total,
+            );
+          }
+          progress.update(event.done, event.label);
+        },
       });
-      await exportRun(store, outputDir);
+      await exportRun(store, outputDir, exportProgress(progress));
+      progress.done();
       console.log(`Run ${result.run.id}: ${result.run.state}`);
       return result.run.state === 'complete' ? 0 : 2;
     });
   } catch (error) {
     if (store) {
       try {
-        await exportRun(store, outputDir);
+        await exportRun(store, outputDir, exportProgress(progress));
       } catch {
         // Keep the original discovery or export error for the caller.
       }
     }
     throw error;
   } finally {
+    progress.done();
     store?.close();
   }
+}
+
+/** Adapts export steps to the progress bar, starting the phase on step zero. */
+function exportProgress(progress: Progress): ExportProgress {
+  return (done, total, label) => {
+    if (done === 0) progress.start('Exportando', total);
+    progress.update(done, label);
+  };
 }
 
 function escapeCell(text: string): string {

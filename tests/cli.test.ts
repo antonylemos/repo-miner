@@ -223,10 +223,12 @@ describe('discovery CLI', () => {
   it('should export a report without a token', async () => {
     const { directory } = createTestStore(catalogOf([repositoryQuery]));
     const fetch = vi.spyOn(globalThis, 'fetch');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     expect(await main(['report', '--run', directory], {})).toBe(0);
     expect(existsSync(join(directory, 'report.md'))).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(`Relatório exportado em ${directory}`);
   });
 
   it('should return one when a report run database is missing', async () => {

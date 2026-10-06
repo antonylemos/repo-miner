@@ -44,6 +44,31 @@ function run(
 }
 
 describe('runDiscovery', () => {
+  it('should report search progress once per subquery', async () => {
+    const { store } = createTestStore(twoQueries);
+    const client: SearchClient = {
+      async search() {
+        return page([]);
+      },
+    };
+    const events: unknown[] = [];
+
+    await runDiscovery({
+      store,
+      client,
+      enrichmentClient: noEnrichment,
+      signal: new AbortController().signal,
+      now: fixedNow,
+      onProgress: (event) => events.push(event),
+    });
+
+    expect(events).toEqual([
+      { phase: 'search', done: 0, total: 2, label: '' },
+      { phase: 'search', done: 1, total: 2, label: expect.any(String) },
+      { phase: 'search', done: 2, total: 2, label: expect.any(String) },
+    ]);
+  });
+
   it('should collect every candidate and finish complete', async () => {
     const { store } = createTestStore(oneQuery);
     const client: SearchClient = {

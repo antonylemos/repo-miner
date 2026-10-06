@@ -261,6 +261,25 @@ describe('exportRun', () => {
     expect(report).not.toMatch(/web components|micro-?frontends?|\bMFE\b/i);
   });
 
+  it('should report each export step until all files are written', async () => {
+    const { directory, store } = setup();
+    const steps: string[] = [];
+
+    await exportRun(store, directory, (done, total, label) =>
+      steps.push(`${done}/${total} ${label}`.trim()),
+    );
+
+    expect(steps).toEqual([
+      '0/6 lendo dados',
+      '1/6 candidates.csv',
+      '2/6 discovery-hits.csv',
+      '3/6 coverage.json',
+      '4/6 report.md',
+      '5/6 manifest.json',
+      '6/6',
+    ]);
+  });
+
   it('should record run parameters, git state and hashes of every exported file', async () => {
     const { directory, store } = setup();
 

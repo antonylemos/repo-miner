@@ -75,11 +75,22 @@ type QueryCoverage = {
   uniqueCandidates: number;
 };
 
+/** Reports the export step about to run: `done` of `total` steps finished so far. */
+export type ExportProgress = (
+  done: number,
+  total: number,
+  label: string,
+) => void;
+
+const EXPORT_STEPS = 6;
+
 export async function exportRun(
   store: DiscoveryStore,
   outputDir: string,
+  onProgress: ExportProgress = () => {},
 ): Promise<{ files: string[] }> {
   mkdirSync(outputDir, { recursive: true });
+  onProgress(0, EXPORT_STEPS, 'lendo dados');
   const run = store.getRun();
   const hits = store.readHits();
   const coverage = store.readCoverage();
@@ -100,6 +111,7 @@ export async function exportRun(
   const queries = queryCoverage(store.getCatalog().queries, coverage, hits);
 
   const candidatesPath = join(outputDir, 'candidates.csv');
+  onProgress(1, EXPORT_STEPS, 'candidates.csv');
   writeCsv(
     candidatesPath,
     CANDIDATE_COLUMNS,
@@ -120,6 +132,7 @@ export async function exportRun(
     ]),
   );
   const hitsPath = join(outputDir, 'discovery-hits.csv');
+  onProgress(2, EXPORT_STEPS, 'discovery-hits.csv');
   writeCsv(
     hitsPath,
     HIT_COLUMNS,
@@ -142,6 +155,7 @@ export async function exportRun(
   );
 
   const coveragePath = join(outputDir, 'coverage.json');
+  onProgress(3, EXPORT_STEPS, 'coverage.json');
   const coverageData = {
     run,
     totals: { hits: hits.length, uniqueCandidates: rows.length },
@@ -159,6 +173,7 @@ export async function exportRun(
   );
 
   const reportPath = join(outputDir, 'report.md');
+  onProgress(4, EXPORT_STEPS, 'report.md');
   const lines = reportLines({
     run,
     hits,
@@ -174,11 +189,13 @@ export async function exportRun(
 
   const exportedFiles = [candidatesPath, hitsPath, coveragePath, reportPath];
   const manifestPath = join(outputDir, 'manifest.json');
+  onProgress(5, EXPORT_STEPS, 'manifest.json');
   writeFileSync(
     manifestPath,
     `${JSON.stringify(buildManifest(run, exportedFiles), null, 2)}\n`,
     'utf8',
   );
+  onProgress(EXPORT_STEPS, EXPORT_STEPS, '');
   return { files: [...exportedFiles, manifestPath] };
 }
 

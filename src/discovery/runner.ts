@@ -18,26 +18,48 @@ export type RunDiscoveryOptions = {
   enrichmentClient: EnrichmentClient;
   signal: AbortSignal;
   now: () => string;
+  onProgress?: (event: ProgressEvent) => void;
+};
+
+/** Reports a phase starting (`done` 0) or one subquery/enrichment batch finishing. */
+export type ProgressEvent = {
+  phase: 'search' | 'enrichment';
+  done: number;
+  total: number;
+  label: string;
 };
 
 /** Runs stored subqueries sequentially, then enriches candidates; GitHub's index may change during a run. */
 export async function runDiscovery(
   options: RunDiscoveryOptions,
 ): Promise<RunResult> {
-  const { store, client, enrichmentClient, signal, now } = options;
+  const { store, client, enrichmentClient, signal, now, onProgress } = options;
   const run = store.getRun();
   if (catalogHash(store.getCatalog()) !== run.catalogHash) {
     throw new Error('Catalog does not match the catalog stored for this run');
   }
 
-  for (const subquery of store.getSubqueries()) {
+  const subqueries = store.getSubqueries();
+  onProgress?.({
+    phase: 'search',
+    done: 0,
+    total: subqueries.length,
+    label: '',
+  });
+  for (const [index, subquery] of subqueries.entries()) {
     if (signal.aborted) break;
     await searchSubquery(store, client, subquery, signal, now);
+    onProgress?.({
+      phase: 'search',
+      done: index + 1,
+      total: subqueries.length,
+      label: subquery.id,
+    });
   }
   // Queue even after an abort so the run cannot be reported complete with unenriched candidates.
   store.queueEnrichment();
   if (!signal.aborted) {
-    await enrichCandidates(store, enrichmentClient, signal, now);
+    await enrichCandidates(store, enrichmentClient, signal, now, onProgress);
   }
 
   const coverage = store.readCoverage();
@@ -111,8 +133,16 @@ async function enrichCandidates(
   client: EnrichmentClient,
   signal: AbortSignal,
   now: () => string,
+  onProgress?: (event: ProgressEvent) => void,
 ): Promise<void> {
   const queue = store.readEnrichmentQueue();
+  if (queue.length === 0) return;
+  onProgress?.({
+    phase: 'enrichment',
+    done: 0,
+    total: queue.length,
+    label: '',
+  });
   for (
     let start = 0;
     start < queue.length && !signal.aborted;
@@ -137,5 +167,11 @@ async function enrichCandidates(
         now(),
       );
     }
+    onProgress?.({
+      phase: 'enrichment',
+      done: Math.min(start + ENRICHMENT_BATCH_SIZE, queue.length),
+      total: queue.length,
+      label: `${batch.length} repositórios`,
+    });
   }
 }
