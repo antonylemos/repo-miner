@@ -35,6 +35,10 @@ export type CreateRunInput = {
 
 /** Synchronous persistence API for one auditable discovery run. */
 export interface DiscoveryStore {
+  /** Reads one consistent view across asynchronous work on this connection. */
+  withReadSnapshot<T>(
+    work: (snapshot: DiscoveryStore) => Promise<T>,
+  ): Promise<T>;
   /** Creates the run, its catalog, expanded subqueries and pending checkpoints. */
   createRun(input: CreateRunInput): Run;
   /** Reads the run metadata stored in this database. */
@@ -182,7 +186,25 @@ const CANDIDATE_OBSERVATIONS_SELECT = `
 export function openStore(path: string): DiscoveryStore {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const database = new DatabaseSync(path);
+  try {
+    return initializeStore(database, path);
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+}
+
+function initializeStore(database: DatabaseSync, path: string): DiscoveryStore {
   assertSupportedSchema(database);
+  database.exec('PRAGMA busy_timeout = 5000');
+  if (path !== ':memory:') {
+    const mode = database
+      .prepare('PRAGMA journal_mode = WAL')
+      .get() as StoredRow;
+    if (mode.journal_mode !== 'wal') {
+      throw new Error('Discovery database requires WAL journal mode');
+    }
+  }
   database.exec(SCHEMA);
   database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   database.function('is_usable_push', { deterministic: true }, (value) =>
@@ -293,7 +315,26 @@ export function openStore(path: string): DiscoveryStore {
     SELECT s.subquery_id, s.query_id, c.state, c.reason
     FROM subqueries s LEFT JOIN checkpoints c ON c.subquery_id = s.subquery_id`;
 
-  return {
+  let snapshotActive = false;
+  const store: DiscoveryStore = {
+    async withReadSnapshot(work) {
+      if (snapshotActive)
+        throw new Error(
+          'A read snapshot is already active; nested snapshots are unsupported',
+        );
+      database.exec('BEGIN DEFERRED');
+      snapshotActive = true;
+      try {
+        const result = await work(store);
+        database.exec('COMMIT');
+        return result;
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      } finally {
+        snapshotActive = false;
+      }
+    },
     createRun({ catalog, hash, startedAt, expansionDate, subqueries }) {
       const existing = database.prepare('SELECT id FROM runs LIMIT 1').get();
       if (existing)
@@ -658,6 +699,7 @@ export function openStore(path: string): DiscoveryStore {
       database.close();
     },
   };
+  return store;
 }
 
 /** Refuses databases written by an older schema instead of migrating them silently. */
@@ -669,7 +711,6 @@ function assertSupportedSchema(database: DatabaseSync): void {
     (database.prepare('PRAGMA user_version').get() as StoredRow).user_version,
   );
   if (hasTables && version !== SCHEMA_VERSION) {
-    database.close();
     throw new Error(
       `Unsupported discovery database schema (version ${version}); start a new run with the current catalog format`,
     );

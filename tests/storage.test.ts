@@ -33,6 +33,120 @@ function complete(subqueryId: string) {
 }
 
 describe('discovery storage', () => {
+  it('should keep reads coherent across a writer commit and see it in the next snapshot', async () => {
+    const { directory, store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'repo' })]),
+    );
+    const writer = trackStore(openStore(join(directory, 'discovery.sqlite')));
+    const subquery = subqueries[0];
+    expect(
+      await store.withReadSnapshot(async (snapshot) => {
+        expect(snapshot.readCandidates()).toHaveLength(0);
+        await Promise.resolve();
+        writer.savePage(
+          subquery,
+          1,
+          page([hit(1)]),
+          complete(subquery.id),
+          'at',
+        );
+        expect(snapshot.readCandidates()).toHaveLength(0);
+        expect(snapshot.getCheckpoint(subquery.id).state).toBe('pending');
+        return 'snapshot-result';
+      }),
+    ).toBe('snapshot-result');
+    expect(
+      await store.withReadSnapshot(
+        async (snapshot) => snapshot.readCandidates().length,
+      ),
+    ).toBe(1);
+  });
+
+  it('should reject nested snapshots and roll back after callback failure', async () => {
+    const { store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'repo' })]),
+    );
+    await expect(
+      store.withReadSnapshot(async (snapshot) => {
+        snapshot.getRun();
+        await snapshot.withReadSnapshot(async (nested) => nested.getRun());
+      }),
+    ).rejects.toThrow(/nested|already active/i);
+    await expect(
+      store.withReadSnapshot(async (snapshot) => {
+        snapshot.getRun();
+        throw new Error('cancelled work');
+      }),
+    ).rejects.toThrow('cancelled work');
+    store.savePage(subqueries[0], 1, page([hit(1)]), complete('repo'), 'at');
+    expect(
+      await store.withReadSnapshot(
+        async (snapshot) => snapshot.readCandidates().length,
+      ),
+    ).toBe(1);
+  });
+
+  it.each([false, true])(
+    'should release a snapshot when candidate iteration is cancelled (failure=%s)',
+    async (failure) => {
+      const { directory, store, subqueries } = createTestStore(
+        catalogOf([query({ id: 'repo' })]),
+      );
+      const writer = trackStore(openStore(join(directory, 'discovery.sqlite')));
+      writer.savePage(
+        subqueries[0],
+        1,
+        page([hit(1), hit(2)]),
+        { subqueryId: 'repo', nextPage: 2, state: 'pending' },
+        'at',
+      );
+      const work = store.withReadSnapshot(async (snapshot) => {
+        for (const candidate of snapshot.iterateCandidates()) {
+          expect(candidate.id).toBe(1);
+          if (failure) throw new Error('iterator cancelled');
+          break;
+        }
+      });
+      if (failure) await expect(work).rejects.toThrow('iterator cancelled');
+      else await work;
+      writer.savePage(
+        subqueries[0],
+        2,
+        page([hit(3)]),
+        complete('repo'),
+        'later',
+      );
+      // A leaked iterator would retain its older view even after the transaction ends.
+      expect(
+        await store.withReadSnapshot(
+          async (snapshot) => snapshot.readCandidates().length,
+        ),
+      ).toBe(3);
+      store.savePage(
+        subqueries[0],
+        3,
+        page([hit(4)]),
+        complete('repo'),
+        'last',
+      );
+      expect(store.readCandidates()).toHaveLength(4);
+    },
+  );
+
+  it('should support snapshots in an in-memory database', async () => {
+    const store = trackStore(openStore(':memory:'));
+    store.createRun({
+      catalog,
+      hash: catalogHash(catalog),
+      startedAt: 'at',
+      expansionDate: '2026-10-05',
+      subqueries: [],
+    });
+    expect(
+      await store.withReadSnapshot(async (snapshot) => snapshot.getCatalog()),
+    ).toEqual(catalog);
+  });
+
   it.each(['failed', 'pending'] as const)(
     'should preserve a %s enrichment but stop retrying it after a usable REST observation',
     (status) => {
@@ -560,6 +674,9 @@ describe('discovery storage', () => {
         .prepare("SELECT name FROM sqlite_master WHERE name = 'subqueries'")
         .get(),
     ).toBeUndefined();
+    expect(check.prepare('PRAGMA journal_mode').get()).toEqual({
+      journal_mode: 'delete',
+    });
     check.close();
   });
 });

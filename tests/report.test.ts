@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -61,6 +61,219 @@ function readCsv(dir: string, name: string) {
 }
 
 describe('exportRun', () => {
+  it('should export a coherent snapshot while another connection commits page ten', async () => {
+    const { directory, store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'repo' })]),
+    );
+    const writer = trackStore(openStore(join(directory, 'discovery.sqlite')));
+    const subquery = subqueries[0];
+    const metadata = {
+      pushed_at: '2025-01-01T00:00:00Z',
+      description: 'x'.repeat(350),
+      topics: ['microfrontends', 'shell'],
+    };
+    for (let number = 1; number <= 9; number += 1) {
+      writer.savePage(
+        subquery,
+        number,
+        page(
+          Array.from({ length: 100 }, (_, offset) =>
+            hit((number - 1) * 100 + offset + 1, { metadata }),
+          ),
+          { hasNext: true, totalCount: 901 },
+        ),
+        { subqueryId: subquery.id, nextPage: number + 1, state: 'pending' },
+        `page-${number}`,
+      );
+    }
+
+    const iterate = store.iterateCandidates.bind(store);
+    let active = false;
+    let produced = 0;
+    let writeError: unknown;
+    let resolveWrite!: () => void;
+    const written = new Promise<void>((resolve) => {
+      resolveWrite = resolve;
+    });
+    store.readCandidates = () => {
+      throw new Error('Export must stream candidates');
+    };
+    store.iterateCandidates = function* () {
+      active = true;
+      try {
+        for (const candidate of iterate()) {
+          produced += 1;
+          if (produced === 20) {
+            queueMicrotask(() => {
+              try {
+                expect(active).toBe(true);
+                expect(produced).toBeLessThan(900);
+                writer.savePage(
+                  subquery,
+                  10,
+                  page([hit(901, { metadata })], { totalCount: 901 }),
+                  {
+                    subqueryId: subquery.id,
+                    nextPage: null,
+                    state: 'complete',
+                  },
+                  'page-10',
+                );
+                writer.finish({
+                  run: {
+                    ...writer.getRun(),
+                    state: 'complete',
+                    endedAt: 'finished-at',
+                  },
+                  coverage: writer.readCoverage(),
+                });
+              } catch (error) {
+                writeError = error;
+              } finally {
+                resolveWrite();
+              }
+            });
+          }
+          yield candidate;
+        }
+      } finally {
+        active = false;
+      }
+    };
+
+    const first = await exportRun(store, directory);
+    await written;
+    expect(writeError).toBeUndefined();
+    expect(writer.getCheckpoint(subquery.id)).toEqual({
+      subqueryId: subquery.id,
+      nextPage: null,
+      state: 'complete',
+    });
+    expect(writer.readCandidates()).toHaveLength(901);
+    const candidateCsvRows = readCsv(directory, 'candidates.csv');
+    const hitCsvRows = readCsv(directory, 'discovery-hits.csv');
+    expect(candidateCsvRows).toHaveLength(900);
+    expect(hitCsvRows).toHaveLength(900);
+    expect(
+      candidateCsvRows.every(
+        (row) => row.scope === 'in_scope' && row.strategies === 'terminology',
+      ),
+    ).toBe(true);
+    expect(candidateCsvRows.at(-1)?.id).toBe('900');
+    expect(hitCsvRows.at(-1)?.candidate_id).toBe('900');
+    const coverage = JSON.parse(
+      readFileSync(join(directory, 'coverage.json'), 'utf8'),
+    );
+    expect(coverage.totals).toEqual({ hits: 900, uniqueCandidates: 900 });
+    expect(coverage.subqueries[0]).toMatchObject({
+      fetchedPages: 9,
+      state: 'pending',
+      totalReported: 901,
+    });
+    expect(coverage.run.state).toBe('running');
+    expect(coverage.byScope).toEqual({
+      in_scope: 900,
+      out_of_scope_temporal: 0,
+      unknown: 0,
+    });
+    expect(coverage.byStrategy.all).toEqual({
+      terminology: 900,
+      technology: 0,
+      broader: 0,
+    });
+    expect(coverage.queries[0]).toMatchObject({
+      pending: 1,
+      complete: 0,
+      hits: 900,
+      uniqueCandidates: 900,
+    });
+    const report = readFileSync(join(directory, 'report.md'), 'utf8');
+    expect(report).toContain('Estado: running');
+    expect(report).toContain('Fim: em andamento');
+    expect(report).toContain(
+      'Hits coletados: 900. Repositórios distintos: 900.',
+    );
+    expect(report).toContain('| terminology | 900 | 900 |');
+    const manifest = JSON.parse(
+      readFileSync(join(directory, 'manifest.json'), 'utf8'),
+    );
+    expect(manifest.run.endedAt).toBeNull();
+    for (const file of first.files) {
+      if (file.endsWith('manifest.json')) continue;
+      expect(manifest.sha256[file.split('/').at(-1) as string]).toBe(
+        createHash('sha256').update(readFileSync(file)).digest('hex'),
+      );
+    }
+
+    await exportRun(store, directory);
+    expect(readCsv(directory, 'candidates.csv')).toHaveLength(901);
+    expect(readCsv(directory, 'discovery-hits.csv')).toHaveLength(901);
+    const after = JSON.parse(
+      readFileSync(join(directory, 'coverage.json'), 'utf8'),
+    );
+    expect(after.totals).toEqual({ hits: 901, uniqueCandidates: 901 });
+    expect(after.subqueries[0].state).toBe('complete');
+    expect(after.run).toMatchObject({
+      state: 'complete',
+      endedAt: 'finished-at',
+    });
+  });
+
+  it('should release a read snapshot after CSV write failure', async () => {
+    const { directory, store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'repo' })]),
+    );
+    const subquery = subqueries[0];
+    const writer = trackStore(openStore(join(directory, 'discovery.sqlite')));
+    writer.savePage(
+      subquery,
+      1,
+      page(
+        Array.from({ length: 900 }, (_, id) =>
+          hit(id + 1, { metadata: { description: 'x'.repeat(350) } }),
+        ),
+      ),
+      { subqueryId: subquery.id, nextPage: 2, state: 'pending' },
+      'at',
+    );
+    const iterate = store.iterateCandidates.bind(store);
+    let closed = false;
+    let produced = 0;
+    store.iterateCandidates = function* () {
+      try {
+        for (const candidate of iterate()) {
+          produced += 1;
+          yield candidate;
+        }
+      } finally {
+        closed = true;
+      }
+    };
+    const output = join(directory, 'failed-export');
+    mkdirSync(join(output, 'candidates.csv'), { recursive: true });
+    await expect(exportRun(store, output)).rejects.toThrow();
+    expect(produced).toBeGreaterThan(0);
+    expect(produced).toBeLessThan(900);
+    expect(closed).toBe(true);
+    expect(
+      await store.withReadSnapshot(
+        async (snapshot) => snapshot.readCandidates().length,
+      ),
+    ).toBe(900);
+    writer.savePage(
+      subquery,
+      2,
+      page([hit(901)]),
+      { subqueryId: subquery.id, nextPage: null, state: 'complete' },
+      'later',
+    );
+    expect(
+      await store.withReadSnapshot(
+        async (snapshot) => snapshot.readCandidates().length,
+      ),
+    ).toBe(901);
+  });
+
   it('should report superseded historical failures without updating the persisted run', async () => {
     const { directory, store, subqueries } = createTestStore(
       catalogOf([

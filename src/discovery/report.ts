@@ -114,108 +114,114 @@ export async function exportRun(
   outputDir: string,
   onProgress: ExportProgress = () => {},
 ): Promise<{ files: string[] }> {
-  mkdirSync(outputDir, { recursive: true });
-  onProgress(0, EXPORT_STEPS, 'lendo dados');
-  const run = store.getRun();
-  const hits = store.readHits();
-  const coverage = store.readCoverage();
-  const enrichment = store.readEnrichmentSummary();
+  return store.withReadSnapshot(async (snapshot) => {
+    mkdirSync(outputDir, { recursive: true });
+    onProgress(0, EXPORT_STEPS, 'lendo dados');
+    const run = snapshot.getRun();
+    const hits = snapshot.readHits();
+    const coverage = snapshot.readCoverage();
+    const enrichment = snapshot.readEnrichmentSummary();
 
-  const candidatesPath = join(outputDir, 'candidates.csv');
-  onProgress(1, EXPORT_STEPS, 'candidates.csv');
-  const rows: CandidateRow[] = [];
-  await writeCsv(
-    candidatesPath,
-    CANDIDATE_COLUMNS,
-    candidateRecords(
-      store.iterateCandidates(),
-      strategiesByCandidate(hits),
-      run.pushedSince,
-      rows,
-    ),
-  );
+    const candidatesPath = join(outputDir, 'candidates.csv');
+    onProgress(1, EXPORT_STEPS, 'candidates.csv');
+    const rows: CandidateRow[] = [];
+    await writeCsv(
+      candidatesPath,
+      CANDIDATE_COLUMNS,
+      candidateRecords(
+        snapshot.iterateCandidates(),
+        strategiesByCandidate(hits),
+        run.pushedSince,
+        rows,
+      ),
+    );
 
-  const inScope = rows.filter((row) => row.scope === 'in_scope');
-  const byScope = Object.fromEntries(
-    SCOPES.map((scope) => [
-      scope,
-      rows.filter((row) => row.scope === scope).length,
-    ]),
-  ) as Record<Scope, number>;
-  const byStrategy = {
-    inScope: strategyCounts(inScope),
-    all: strategyCounts(rows),
-  };
-  const overlap = intersections(inScope);
-  const queries = queryCoverage(store.getCatalog().queries, coverage, hits);
-
-  const hitsPath = join(outputDir, 'discovery-hits.csv');
-  onProgress(2, EXPORT_STEPS, 'discovery-hits.csv');
-  await writeCsv(
-    hitsPath,
-    HIT_COLUMNS,
-    [...hits]
-      .sort(compareHits)
-      .map((hit) => [
-        hit.queryId,
-        hit.subqueryId,
-        hit.strategy,
-        hit.endpoint,
-        hit.qEffective,
-        hit.fetchedAt,
-        hit.candidate.id,
-        hit.candidate.fullName,
-        hit.candidate.url,
-        hit.path ?? '',
-        hit.url,
+    const inScope = rows.filter((row) => row.scope === 'in_scope');
+    const byScope = Object.fromEntries(
+      SCOPES.map((scope) => [
+        scope,
+        rows.filter((row) => row.scope === scope).length,
       ]),
-  );
+    ) as Record<Scope, number>;
+    const byStrategy = {
+      inScope: strategyCounts(inScope),
+      all: strategyCounts(rows),
+    };
+    const overlap = intersections(inScope);
+    const queries = queryCoverage(
+      snapshot.getCatalog().queries,
+      coverage,
+      hits,
+    );
 
-  const coveragePath = join(outputDir, 'coverage.json');
-  onProgress(3, EXPORT_STEPS, 'coverage.json');
-  const coverageData = {
-    run,
-    totals: { hits: hits.length, uniqueCandidates: rows.length },
-    byScope,
-    byStrategy,
-    intersections: overlap,
-    enrichment: enrichment.counts,
-    enrichmentRequired: enrichment.required,
-    enrichmentSuperseded: enrichment.superseded,
-    queries,
-    subqueries: coverage,
-  };
-  writeFileSync(
-    coveragePath,
-    `${JSON.stringify(coverageData, null, 2)}\n`,
-    'utf8',
-  );
+    const hitsPath = join(outputDir, 'discovery-hits.csv');
+    onProgress(2, EXPORT_STEPS, 'discovery-hits.csv');
+    await writeCsv(
+      hitsPath,
+      HIT_COLUMNS,
+      [...hits]
+        .sort(compareHits)
+        .map((hit) => [
+          hit.queryId,
+          hit.subqueryId,
+          hit.strategy,
+          hit.endpoint,
+          hit.qEffective,
+          hit.fetchedAt,
+          hit.candidate.id,
+          hit.candidate.fullName,
+          hit.candidate.url,
+          hit.path ?? '',
+          hit.url,
+        ]),
+    );
 
-  const reportPath = join(outputDir, 'report.md');
-  onProgress(4, EXPORT_STEPS, 'report.md');
-  const lines = reportLines({
-    run,
-    hits,
-    rows,
-    byScope,
-    byStrategy,
-    overlap,
-    enrichment,
-    queries,
-    coverage,
+    const coveragePath = join(outputDir, 'coverage.json');
+    onProgress(3, EXPORT_STEPS, 'coverage.json');
+    const coverageData = {
+      run,
+      totals: { hits: hits.length, uniqueCandidates: rows.length },
+      byScope,
+      byStrategy,
+      intersections: overlap,
+      enrichment: enrichment.counts,
+      enrichmentRequired: enrichment.required,
+      enrichmentSuperseded: enrichment.superseded,
+      queries,
+      subqueries: coverage,
+    };
+    writeFileSync(
+      coveragePath,
+      `${JSON.stringify(coverageData, null, 2)}\n`,
+      'utf8',
+    );
+
+    const reportPath = join(outputDir, 'report.md');
+    onProgress(4, EXPORT_STEPS, 'report.md');
+    const lines = reportLines({
+      run,
+      hits,
+      rows,
+      byScope,
+      byStrategy,
+      overlap,
+      enrichment,
+      queries,
+      coverage,
+    });
+    writeFileSync(reportPath, `${lines.join('\n')}\n`, 'utf8');
+
+    const exportedFiles = [candidatesPath, hitsPath, coveragePath, reportPath];
+    const manifestPath = join(outputDir, 'manifest.json');
+    onProgress(5, EXPORT_STEPS, 'manifest.json');
+    writeFileSync(
+      manifestPath,
+      `${JSON.stringify(await buildManifest(run, exportedFiles), null, 2)}\n`,
+      'utf8',
+    );
+    onProgress(EXPORT_STEPS, EXPORT_STEPS, '');
+    return { files: [...exportedFiles, manifestPath] };
   });
-  writeFileSync(reportPath, `${lines.join('\n')}\n`, 'utf8');
-
-  const exportedFiles = [candidatesPath, hitsPath, coveragePath, reportPath];
-  const manifestPath = join(outputDir, 'manifest.json');
-  onProgress(5, EXPORT_STEPS, 'manifest.json');
-  writeFileSync(
-    manifestPath,
-    `${JSON.stringify(await buildManifest(run, exportedFiles), null, 2)}\n`,
-    'utf8',
-  );
-  onProgress(EXPORT_STEPS, EXPORT_STEPS, '');
-  return { files: [...exportedFiles, manifestPath] };
 }
 
 function strategiesByCandidate(hits: StoredHit[]): Map<number, Set<Strategy>> {
@@ -550,7 +556,13 @@ async function writeCsv(
     yield `${columns.map(csvField).join(',')}\n`;
     for (const row of rows) yield `${row.map(csvField).join(',')}\n`;
   }
-  await pipeline(Readable.from(lines()), createWriteStream(path, 'utf8'));
+  const iterator = lines();
+  try {
+    await pipeline(Readable.from(iterator), createWriteStream(path, 'utf8'));
+  } finally {
+    // Close nested generators and the SQLite cursor even if the destination fails.
+    iterator.return();
+  }
 }
 
 function compareHits(left: StoredHit, right: StoredHit): number {
