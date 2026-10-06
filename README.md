@@ -102,9 +102,9 @@ A API de busca devolve no máximo 1.000 resultados por consulta. A partição di
 
 ### O que conta como atividade
 
-O recorte compara a data do **último push** do repositório (`pushed_at`, informada pelo GitHub) com `pushedSince`. Com `pushedSince: 2024-01-01`, um repositório entra quando recebeu algum push entre 01/01/2024 e o momento em que a ferramenta leu essa data. Na prática:
+O recorte compara a data do **último push** do repositório (`pushed_at`, informada pelo GitHub) com `pushedSince`. Com `pushedSince: 2025-04-01`, um repositório entra quando recebeu algum push entre 01/04/2025 e o momento em que a ferramenta leu essa data. Na prática:
 
-- **Push não é commit.** O que conta é quando os commits chegaram ao GitHub, não a data registrada neles. Commits criados em 2023 e enviados em 2024 contam como atividade em 2024.
+- **Push não é commit.** O que conta é quando os commits chegaram ao GitHub, não a data registrada neles. Commits criados em março de 2025 e enviados em abril contam como atividade em abril.
 - **Qualquer branch conta.** Um push em um branch que não é o principal também atualiza a data, mesmo que o branch principal esteja parado.
 - **"Até hoje" significa até a coleta.** A data é lida quando o repositório aparece na busca ou quando seus metadados são completados; a coluna `pushed_at_observed_at` registra esse momento. Pushes posteriores à rodada não alteram o resultado dela.
 - **Atividade recente não é implementação recente.** Um repositório cuja estrutura foi criada anos antes e que recebeu apenas um ajuste recente entra no recorte. Se o estudo precisar de commits recentes no branch principal, esse é outro critério, que a ferramenta não aplica hoje.
@@ -139,21 +139,22 @@ Cada rodada grava em seu diretório:
 
 O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-frontends.json) foi construído para o estudo *What Do Micro-Frontends Look Like in Software Repositories?*, que caracteriza como implementações de micro-frontends (MFEs) aparecem em repositórios. A descoberta produz o conjunto de candidatos que depois passa por triagem e classificação (*MFE-implemented*, *Non-MFE* ou *Uncertain*).
 
-**As três estratégias neste estudo** (32 consultas):
+**As três estratégias neste estudo** (28 consultas):
 
 | Estratégia | Consultas | Exemplos |
 | --- | ---: | --- |
 | `terminology` | 8 | `topic:microfrontends`; `"micro frontend" in:name,description,readme` |
-| `technology` | 19 | `topic:module-federation`; `"single-spa" filename:package.json`; `ModuleFederationPlugin remotes extension:js`; frameworks como qiankun, wujie, micro-app e Piral |
+| `technology` | 15 | Module Federation (`topic:module-federation`, `ModuleFederationPlugin remotes extension:js`, plugins Vite e Angular), single-spa (`"single-spa" filename:package.json`) e Web Components |
 | `broader` | 5 | `"frontend composition"`, `"frontend orchestration"`, `"micro apps" frontend` |
 
 **Decisões do estudo:**
 
-- **Recorte por atividade** (`pushedSince: 2024-01-01`): prioriza repositórios com algum push de 2024 até a data da coleta, sem excluir projetos antigos que continuam mantidos. O critério é o último push, não a data dos commits nem a data em que a arquitetura MFE foi introduzida (veja [O que conta como atividade](#o-que-conta-como-atividade)).
-- **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 11 e 17 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
+- **Recorte por atividade** (`pushedSince: 2025-04-01`): prioriza repositórios com algum push nos 18 meses entre 01/04/2025 e a data da coleta, sem excluir projetos antigos que continuam mantidos. O critério é o último push, não a data dos commits nem a data em que a arquitetura MFE foi introduzida (veja [O que conta como atividade](#o-que-conta-como-atividade)).
+- **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 8 e 13 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
 - **Termos com hífen entre aspas:** sem aspas, `single-spa` é lido como "single" e "spa" (356 mil resultados contra 6 mil com aspas).
+- **Tecnologias fixadas:** a estratégia `technology` cobre apenas Module Federation, single-spa e Web Components. Frameworks como qiankun, wujie, micro-app e Piral ficam de fora; repositórios que os usam e se descrevem como MFE ainda chegam pela terminologia.
 - **Consultas de tecnologia sobre artefatos** (`package.json`, configurações com `remotes`, `registerApplication`), e não sobre prosa, para encontrar repositórios que usam a tecnologia sem se descrever como MFE.
-- **Risco conhecido:** Web Components não tem um artefato que distinga uso como MFE de uma biblioteca de componentes. A única consulta dessa abordagem exige que o README também mencione micro-frontends; os demais casos devem chegar pela terminologia e ser identificados na triagem.
+- **Risco conhecido:** Web Components não tem um artefato que distinga uso como MFE de uma biblioteca de componentes. As duas consultas dessa abordagem exigem que o README também mencione micro-frontends, grafado como `"micro frontends"` ou `microfrontends`; os demais casos devem chegar pela terminologia e ser identificados na triagem.
 
 **Execução:**
 

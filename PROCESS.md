@@ -133,12 +133,12 @@ Cada candidato recebe um `scope`, calculado no momento da exportação e nunca g
 
 A fonte da data (`enrichment` ou `search`) e o momento em que ela foi observada são exportados junto, para que qualquer pessoa possa conferir de onde veio a decisão.
 
-**O que conta como atividade.** A data comparada é a do **último push** ao GitHub, não a data dos commits. Com recorte em 01/01/2024, um repositório entra quando recebeu algum push entre essa data e o momento da coleta. Isso tem quatro consequências:
+**O que conta como atividade.** A data comparada é a do **último push** ao GitHub, não a data dos commits. Com recorte em 01/04/2025, um repositório entra quando recebeu algum push entre essa data e o momento da coleta. Isso tem quatro consequências:
 
-- Commits criados em 2023 e enviados em 2024 contam como atividade em 2024; um commit datado de 2024 que nunca foi enviado não conta.
+- Commits criados em março de 2025 e enviados em abril contam como atividade em abril; um commit datado de abril que nunca foi enviado não conta.
 - Um push em qualquer branch atualiza a data, mesmo que o branch principal esteja parado.
 - "Até hoje" quer dizer até a coleta: a data é lida quando o repositório aparece na busca ou é enriquecido, e um push feito depois da rodada não muda o resultado dela.
-- Estar ativo não significa que o fenômeno estudado foi implementado recentemente. Um repositório antigo com um ajuste em 2024 entra no recorte; se o estudo exigir commits recentes no branch principal, esse é outro critério, não aplicado hoje.
+- Estar ativo não significa que o fenômeno estudado foi implementado recentemente. Um repositório antigo com um ajuste em 2025 entra no recorte; se o estudo exigir commits recentes no branch principal, esse é outro critério, não aplicado hoje.
 
 Candidatos fora do recorte **não são apagados**: continuam nas exportações, apenas marcados. Retirar alguém da análise é uma decisão que precisa estar visível.
 
@@ -192,14 +192,14 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 }
 ```
 
-1. **Expansão.** Numa rodada iniciada em 05/10/2026, com recorte em 01/01/2024, ela vira 33 subconsultas:
+1. **Expansão.** Numa rodada iniciada em 05/10/2026, com recorte em 01/04/2025, ela vira 33 subconsultas:
    - `technology-single-spa-repositories#created:<2019-01-01`, para os repositórios criados antes de 2019;
    - `…#created:2019-Q1` até `…#created:2026-Q3`, uma por trimestre;
    - `…#created:>=2026-10-01`, para o trimestre corrente.
 
    O texto enviado ao GitHub para o segundo trimestre de 2025, por exemplo, é:
-   `"single-spa" in:name,description,readme pushed:>=2024-01-01 created:2025-04-01..2025-06-30`
-2. **Dry-run.** A linha dessa subconsulta mostra o total. A consulta inteira tinha cerca de 2.500 repositórios ativos, então cada trimestre fica bem abaixo de 1.000.
+   `"single-spa" in:name,description,readme pushed:>=2025-04-01 created:2025-04-01..2025-06-30`
+2. **Dry-run.** A linha dessa subconsulta mostra o total. A consulta inteira tinha cerca de 1.700 repositórios ativos, então cada trimestre fica bem abaixo de 1.000.
 3. **Busca.** Suponha que o trimestre tenha 140 resultados: a ferramenta busca 2 páginas (100 + 40), grava cada uma com seu checkpoint e marca a subconsulta como `complete`.
 4. **Deduplicação.** Um desses resultados, um repositório fictício `exemplo/shell-app`, também aparece na consulta de código `"single-spa" filename:package.json`, no arquivo `apps/shell/package.json`. Ele continua sendo um único candidato, agora com dois hits.
 5. **Enriquecimento.** Como ele foi encontrado primeiro pela busca de repositórios, que traz a data de push, não precisa ser enriquecido. Se tivesse aparecido só na busca de código, entraria na fila do GraphQL.

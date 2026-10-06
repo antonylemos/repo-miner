@@ -14,12 +14,12 @@ const catalog = parseCatalog(
 
 describe('configured discovery catalog', () => {
   it('should declare the approved queries with the activity filter', () => {
-    expect(catalog.filters.pushedSince).toBe('2024-01-01');
-    expect(catalog.queries).toHaveLength(32);
+    expect(catalog.filters.pushedSince).toBe('2025-04-01');
+    expect(catalog.queries).toHaveLength(28);
     const count = (strategy: string) =>
       catalog.queries.filter((q) => q.strategy === strategy).length;
     expect(count('terminology')).toBe(8);
-    expect(count('technology')).toBe(19);
+    expect(count('technology')).toBe(15);
     expect(count('broader')).toBe(5);
   });
 
@@ -35,12 +35,20 @@ describe('configured discovery catalog', () => {
     ).toBe(false);
   });
 
+  it('should restrict technology queries to Module Federation, single-spa and Web Components', () => {
+    const texts = catalog.queries.map((q) => q.q);
+    expect(texts.some((q) => /qiankun|wujie|micro-zoe|piral/i.test(q))).toBe(
+      false,
+    );
+    expect(texts).toContain('"web components" microfrontends in:readme');
+  });
+
   it('should expand into unique subqueries', () => {
     const subqueries = expandCatalog(catalog, '2026-10-05');
     expect(new Set(subqueries.map((s) => s.id)).size).toBe(subqueries.length);
     for (const subquery of subqueries) {
       if (subquery.endpoint === 'repositories')
-        expect(subquery.q).toContain('pushed:>=2024-01-01');
+        expect(subquery.q).toContain('pushed:>=2025-04-01');
       else expect(subquery.q).not.toContain('pushed:');
     }
   });

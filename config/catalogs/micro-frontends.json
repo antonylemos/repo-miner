@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "filters": { "pushedSince": "2024-01-01" },
+  "filters": { "pushedSince": "2025-04-01" },
   "queries": [
     {
       "id": "terminology-topic-microfrontend",
@@ -93,13 +93,6 @@
       "rationale": "Tópico de tecnologia de composição, independente do termo MFE (§3.1, procedimento 2)."
     },
     {
-      "id": "technology-topic-qiankun",
-      "strategy": "technology",
-      "endpoint": "repositories",
-      "q": "topic:qiankun",
-      "rationale": "Tópico de framework MFE adicional admitido pelo protocolo (§3.1, \"among others\")."
-    },
-    {
       "id": "technology-module-federation-repositories",
       "strategy": "technology",
       "endpoint": "repositories",
@@ -129,6 +122,13 @@
       "endpoint": "repositories",
       "q": "\"web components\" \"micro frontends\" in:readme",
       "rationale": "Web Components não tem artefato discriminante; exige coocorrência com o termo MFE para excluir bibliotecas de componentes."
+    },
+    {
+      "id": "technology-web-components-microfrontends-repositories",
+      "strategy": "technology",
+      "endpoint": "repositories",
+      "q": "\"web components\" microfrontends in:readme",
+      "rationale": "Variante da coocorrência com o termo MFE grafado sem espaço; a busca trata \"microfrontends\" e \"micro frontends\" como termos distintos."
     },
     {
       "id": "technology-module-federation-package-code",
@@ -176,42 +176,6 @@
       "endpoint": "code",
       "q": "\"single-spa\" filename:package.json",
       "rationale": "Dependência declarada de single-spa (§3.1, procedimento 2).",
-      "partition": {
-        "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
-      }
-    },
-    {
-      "id": "technology-qiankun-package-code",
-      "strategy": "technology",
-      "endpoint": "code",
-      "q": "\"qiankun\" filename:package.json",
-      "rationale": "Dependência de qiankun, framework MFE adicional (§3.1, \"among others\").",
-      "partition": {
-        "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
-      }
-    },
-    {
-      "id": "technology-micro-app-package-code",
-      "strategy": "technology",
-      "endpoint": "code",
-      "q": "\"@micro-zoe/micro-app\" filename:package.json",
-      "rationale": "Dependência de micro-app, framework MFE adicional (§3.1, \"among others\")."
-    },
-    {
-      "id": "technology-wujie-package-code",
-      "strategy": "technology",
-      "endpoint": "code",
-      "q": "\"wujie\" filename:package.json",
-      "rationale": "Dependência de wujie, framework MFE adicional (§3.1, \"among others\")."
-    },
-    {
-      "id": "technology-piral-package-code",
-      "strategy": "technology",
-      "endpoint": "code",
-      "q": "\"piral\" filename:package.json",
-      "rationale": "Dependência de Piral, framework MFE adicional (§3.1, \"among others\").",
       "partition": {
         "by": "size",
         "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
