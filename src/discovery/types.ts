@@ -87,6 +87,7 @@ export type Enrichment = {
 };
 export type StoredCandidate = Candidate & {
   firstSeenAt: string;
+  metadataObservedAt: string | null;
   enrichment: Enrichment | null;
 };
 /** A retained origin; repository metadata lives on the candidate, not on each hit. */

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname, posix } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { isUsablePush } from './scope.js';
 import type {
   Catalog,
   Checkpoint,
@@ -147,11 +148,32 @@ const SCHEMA = `
     data_json TEXT,
     reason TEXT
   );
+  CREATE INDEX IF NOT EXISTS hits_repository_observation
+    ON hits (repository_id, fetched_at, subquery_id, path);
 `;
 
 const SUBQUERY_SELECT = `
   SELECT s.subquery_id, s.query_id, q.strategy, q.endpoint, s.q_effective, s.partition_label
   FROM subqueries s JOIN queries q ON q.query_id = s.query_id`;
+
+// Select all repository fields from one observation, preserving the original first encounter.
+const CANDIDATE_OBSERVATIONS_SELECT = `
+  SELECT c.repository_id, c.node_id,
+         COALESCE(h.full_name, c.full_name) AS full_name,
+         COALESCE(h.repository_url, c.url) AS url,
+         COALESCE(h.metadata_json, c.metadata_json) AS metadata_json,
+         COALESCE(h.fetched_at, c.first_seen_at) AS metadata_observed_at,
+         c.first_seen_at, e.status, e.fetched_at, e.data_json, e.reason
+  FROM candidates c
+  LEFT JOIN hits h ON h.rowid = (
+    SELECT observation.rowid FROM hits observation
+    JOIN queries q ON q.query_id = observation.query_id
+    WHERE observation.repository_id = c.repository_id AND q.endpoint = 'repositories'
+    ORDER BY is_usable_push(json_extract(observation.metadata_json, '$.pushed_at')) DESC,
+             observation.fetched_at, observation.subquery_id, observation.path
+    LIMIT 1
+  )
+  LEFT JOIN enrichments e ON e.repository_id = c.repository_id`;
 
 /** Opens a run database and creates its schema if needed. */
 export function openStore(path: string): DiscoveryStore {
@@ -160,6 +182,9 @@ export function openStore(path: string): DiscoveryStore {
   assertSupportedSchema(database);
   database.exec(SCHEMA);
   database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  database.function('is_usable_push', { deterministic: true }, (value) =>
+    isUsablePush(value) ? 1 : 0,
+  );
 
   const transaction = (work: () => void): void => {
     database.exec('BEGIN IMMEDIATE');
@@ -224,12 +249,7 @@ export function openStore(path: string): DiscoveryStore {
   };
   function* iterateCandidates(): Generator<StoredCandidate> {
     const rows = database
-      .prepare(
-        `SELECT c.repository_id, c.node_id, c.full_name, c.url, c.metadata_json, c.first_seen_at,
-                e.status, e.fetched_at, e.data_json, e.reason
-         FROM candidates c LEFT JOIN enrichments e ON e.repository_id = c.repository_id
-         ORDER BY c.repository_id`,
-      )
+      .prepare(`${CANDIDATE_OBSERVATIONS_SELECT} ORDER BY c.repository_id`)
       .iterate() as Iterable<StoredRow>;
     for (const row of rows) {
       yield {
@@ -242,6 +262,10 @@ export function openStore(path: string): DiscoveryStore {
           unknown
         >,
         firstSeenAt: String(row.first_seen_at),
+        metadataObservedAt:
+          row.metadata_observed_at === null
+            ? null
+            : String(row.metadata_observed_at),
         enrichment:
           row.status === null
             ? null

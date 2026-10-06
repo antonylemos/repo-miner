@@ -10,12 +10,74 @@ function candidate(overrides: Partial<StoredCandidate>): StoredCandidate {
     url: 'https://github.com/org/repo',
     metadata: {},
     firstSeenAt: 'seen-at',
+    metadataObservedAt: 'observed-at',
     enrichment: null,
     ...overrides,
   };
 }
 
 describe('scope', () => {
+  it('should fall back to REST when successful enrichment has an invalid push', () => {
+    for (const pushedAt of ['', 'not a date', null, 123]) {
+      const push = effectivePush(
+        candidate({
+          metadata: { pushed_at: '2025-04-01T00:00:00Z' },
+          enrichment: {
+            status: 'ok',
+            fetchedAt: 'enriched-at',
+            data: { pushedAt },
+            reason: null,
+          },
+        }),
+      );
+      expect(push).toEqual({
+        pushedAt: '2025-04-01T00:00:00Z',
+        source: 'search',
+        observedAt: 'observed-at',
+      });
+      expect(candidateScope(push, '2025-04-01')).toBe('in_scope');
+    }
+  });
+
+  it('should prefer usable enrichment even when observed before REST', () => {
+    expect(
+      effectivePush(
+        candidate({
+          metadata: { pushed_at: '2026-10-01T00:00:00Z' },
+          metadataObservedAt: '2026-10-06T10:01:00Z',
+          enrichment: {
+            status: 'ok',
+            fetchedAt: '2026-10-06T10:00:00Z',
+            data: { pushedAt: '2025-04-01T00:00:00Z' },
+            reason: null,
+          },
+        }),
+      ),
+    ).toEqual({
+      pushedAt: '2025-04-01T00:00:00Z',
+      source: 'enrichment',
+      observedAt: '2026-10-06T10:00:00Z',
+    });
+  });
+
+  it('should have no push provenance when both sources are invalid', () => {
+    for (const value of [undefined, null, '', 'invalid', 123]) {
+      expect(
+        effectivePush(
+          candidate({
+            metadata: { pushed_at: value },
+            enrichment: {
+              status: 'ok',
+              fetchedAt: 't',
+              data: { pushedAt: value },
+              reason: null,
+            },
+          }),
+        ),
+      ).toEqual({ pushedAt: null, source: null, observedAt: null });
+    }
+  });
+
   it('should prefer enrichment over search metadata', () => {
     const push = effectivePush(
       candidate({
@@ -51,7 +113,7 @@ describe('scope', () => {
     expect(push).toEqual({
       pushedAt: '2023-12-31T23:59:59Z',
       source: 'search',
-      observedAt: 'seen-at',
+      observedAt: 'observed-at',
     });
     expect(candidateScope(push, '2024-01-01')).toBe('out_of_scope_temporal');
   });

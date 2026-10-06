@@ -33,6 +33,176 @@ function complete(subqueryId: string) {
 }
 
 describe('discovery storage', () => {
+  it('should select repository metadata regardless of endpoint arrival order', () => {
+    for (const codeFirst of [true, false]) {
+      const { store, subqueries } = createTestStore(
+        catalogOf(
+          [query({ id: 'repo' }), query({ id: 'code', endpoint: 'code' })],
+          '2025-04-01',
+        ),
+      );
+      const metadata = {
+        pushed_at: '2026-10-01T00:00:00Z',
+        description: 'shell',
+        topics: ['example'],
+        license: { spdx_id: 'MIT' },
+      };
+      const observations = [
+        {
+          subquery: subqueries[1],
+          result: hit(1, { path: 'package.json', metadata: {} }),
+          at: '2026-10-06T10:00:00Z',
+        },
+        {
+          subquery: subqueries[0],
+          result: hit(1, { metadata }),
+          at: '2026-10-06T10:01:00Z',
+        },
+      ];
+      observations[1].result.candidate.fullName = 'org/renamed';
+      observations[1].result.candidate.url = 'https://github.com/org/renamed';
+      observations[1].result.candidate.nodeId = 'later-node';
+      if (!codeFirst) observations.reverse();
+      for (const { subquery, result, at } of observations) {
+        store.savePage(subquery, 1, page([result]), complete(subquery.id), at);
+      }
+      const candidate = store.readCandidates()[0];
+      expect(candidate.metadata).toEqual(metadata);
+      expect(candidate).toHaveProperty(
+        'metadataObservedAt',
+        '2026-10-06T10:01:00Z',
+      );
+      expect(candidate.firstSeenAt).toBe(
+        codeFirst ? '2026-10-06T10:00:00Z' : '2026-10-06T10:01:00Z',
+      );
+      expect(candidate.fullName).toBe('org/renamed');
+      expect(candidate.url).toBe('https://github.com/org/renamed');
+      expect(candidate.nodeId).toBe(codeFirst ? 'R_1' : 'later-node');
+      expect([...store.iterateCandidates()]).toEqual(store.readCandidates());
+      expect(store.readCandidates()).toHaveLength(1);
+      expect(store.readHits()).toHaveLength(2);
+    }
+  });
+
+  it('should choose one deterministic REST observation', () => {
+    const { store, subqueries } = createTestStore(
+      catalogOf(['z', 'b', 'a', 'valid-late'].map((id) => query({ id }))),
+    );
+    const valid = '2026-10-01T00:00:00Z';
+    const save = (
+      index: number,
+      entries: ReturnType<typeof hit>[],
+      at: string,
+    ) => {
+      const subquery = subqueries[index];
+      store.savePage(subquery, 1, page(entries), complete(subquery.id), at);
+    };
+    save(
+      0,
+      [
+        hit(1, { metadata: { description: 'missing' } }),
+        hit(2, { metadata: { pushed_at: valid, description: 'later' } }),
+        hit(3, { metadata: { pushed_at: valid, description: 'z' } }),
+      ],
+      '2026-10-06T10:02:00Z',
+    );
+    save(
+      1,
+      [
+        hit(1, { metadata: { pushed_at: 'invalid', topics: ['invalid'] } }),
+        hit(2, { metadata: { pushed_at: valid, description: 'earlier' } }),
+        hit(3, { metadata: { pushed_at: valid, description: 'b' } }),
+      ],
+      '2026-10-06T10:01:00Z',
+    );
+    save(
+      2,
+      [
+        hit(3, {
+          path: 'z',
+          metadata: { pushed_at: valid, description: 'path-z' },
+        }),
+        hit(3, {
+          path: 'a',
+          metadata: { pushed_at: valid, description: 'path-a' },
+        }),
+      ],
+      '2026-10-06T10:01:00Z',
+    );
+    save(
+      3,
+      [hit(1, { metadata: { pushed_at: valid, description: 'valid' } })],
+      '2026-10-06T10:03:00Z',
+    );
+    expect(
+      store.readCandidates().map((candidate) => candidate.metadata),
+    ).toEqual([
+      { pushed_at: valid, description: 'valid' },
+      { pushed_at: valid, description: 'earlier' },
+      { pushed_at: valid, description: 'path-a' },
+    ]);
+  });
+
+  it('should use the earliest REST observation when none has a usable push', () => {
+    const { store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'later' }), query({ id: 'earlier' })]),
+    );
+    for (const [id, value] of [
+      null,
+      '',
+      'invalid',
+      123,
+      { date: '2026-10-01' },
+    ].entries()) {
+      store.savePage(
+        subqueries[0],
+        id + 1,
+        page([
+          hit(id + 1, { metadata: { pushed_at: value, description: 'later' } }),
+        ]),
+        complete(subqueries[0].id),
+        '2026-10-06T10:01:00Z',
+      );
+      store.savePage(
+        subqueries[1],
+        id + 1,
+        page([hit(id + 1, { metadata: { description: 'earlier' } })]),
+        complete(subqueries[1].id),
+        '2026-10-06T10:00:00Z',
+      );
+    }
+    expect(
+      store
+        .readCandidates()
+        .map((candidate) => [candidate.metadata, candidate.metadataObservedAt]),
+    ).toEqual(
+      Array.from({ length: 5 }, () => [
+        { description: 'earlier' },
+        '2026-10-06T10:00:00Z',
+      ]),
+    );
+  });
+
+  it('should preserve candidate metadata and provenance without a REST observation', () => {
+    const { store, subqueries } = createTestStore(
+      catalogOf([query({ id: 'code', endpoint: 'code' })]),
+    );
+    store.savePage(
+      subqueries[0],
+      1,
+      page([
+        hit(1, { path: 'package.json', metadata: { description: 'original' } }),
+      ]),
+      complete('code'),
+      '2026-10-06T10:00:00Z',
+    );
+    expect(store.readCandidates()[0]).toMatchObject({
+      metadata: { description: 'original' },
+      metadataObservedAt: '2026-10-06T10:00:00Z',
+      firstSeenAt: '2026-10-06T10:00:00Z',
+    });
+  });
+
   it('should persist subqueries in expansion order with their source query', () => {
     const { store, subqueries } = createTestStore(catalog);
 

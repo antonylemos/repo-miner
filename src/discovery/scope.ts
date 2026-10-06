@@ -6,11 +6,20 @@ export type EffectivePush = {
   observedAt: string | null;
 };
 
-/** Prefers enrichment because it is fetched after the search and reflects later activity. */
+/** A push must be a nonempty string representing a finite timestamp. */
+export function isUsablePush(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+/** Valid successful enrichment takes precedence regardless of observation order. */
 export function effectivePush(candidate: StoredCandidate): EffectivePush {
   const enrichment = candidate.enrichment;
   const enrichedPush = enrichment?.data?.pushedAt;
-  if (enrichment?.status === 'ok' && typeof enrichedPush === 'string') {
+  if (enrichment?.status === 'ok' && isUsablePush(enrichedPush)) {
     return {
       pushedAt: enrichedPush,
       source: 'enrichment',
@@ -18,11 +27,11 @@ export function effectivePush(candidate: StoredCandidate): EffectivePush {
     };
   }
   const searchedPush = candidate.metadata.pushed_at;
-  if (typeof searchedPush === 'string') {
+  if (isUsablePush(searchedPush)) {
     return {
       pushedAt: searchedPush,
       source: 'search',
-      observedAt: candidate.firstSeenAt,
+      observedAt: candidate.metadataObservedAt,
     };
   }
   return { pushedAt: null, source: null, observedAt: null };

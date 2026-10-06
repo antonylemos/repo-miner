@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { exportRun } from '../src/discovery/report.js';
+import { openStore } from '../src/discovery/storage.js';
 import type { SearchHit, Subquery } from '../src/discovery/types.js';
 import {
   catalogOf,
@@ -12,6 +14,7 @@ import {
   page,
   parseCsv,
   query,
+  trackStore,
 } from './helpers.js';
 
 const terminology = query({ id: 'query-a' });
@@ -58,6 +61,91 @@ function readCsv(dir: string, name: string) {
 }
 
 describe('exportRun', () => {
+  it('should recover REST metadata from a v2 file without changing original records', async () => {
+    const sourceCatalog = catalogOf(
+      [query({ id: 'repo' }), query({ id: 'code', endpoint: 'code' })],
+      '2025-04-01',
+    );
+    const { directory, store, subqueries } = createTestStore(sourceCatalog);
+    const metadata = {
+      pushed_at: '2026-10-01T00:00:00Z',
+      description: 'shell',
+      topics: ['example'],
+      license: { spdx_id: 'MIT' },
+    };
+    store.savePage(
+      subqueries[1],
+      1,
+      page([hit(1, { path: 'package.json', metadata: {} })]),
+      { subqueryId: 'code', nextPage: null, state: 'complete' },
+      '2026-10-06T10:00:00Z',
+    );
+    store.savePage(
+      subqueries[0],
+      1,
+      page([hit(1, { metadata })]),
+      { subqueryId: 'repo', nextPage: null, state: 'complete' },
+      '2026-10-06T10:01:00Z',
+    );
+    const originalRun = store.getRun();
+    store.close();
+    const path = join(directory, 'discovery.sqlite');
+    const raw = new DatabaseSync(path);
+    // Existing v2 files predate the observation index.
+    raw.exec('DROP INDEX IF EXISTS hits_repository_observation');
+    const records = () =>
+      [
+        'candidates',
+        'hits',
+        'pages',
+        'runs',
+        'queries',
+        'subqueries',
+        'checkpoints',
+        'enrichments',
+      ].map((table) =>
+        raw.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+      );
+    const schema = () =>
+      raw
+        .prepare(
+          "SELECT type, name, sql FROM sqlite_master WHERE name != 'hits_repository_observation' ORDER BY name",
+        )
+        .all();
+    const before = records();
+    const beforeSchema = schema();
+    const reopened = trackStore(openStore(path));
+    expect(reopened.getRun()).toEqual(originalRun);
+    expect(reopened.getCatalog()).toEqual(sourceCatalog);
+    expect(reopened.readCandidates()[0]).toMatchObject({
+      metadata,
+      metadataObservedAt: '2026-10-06T10:01:00Z',
+      firstSeenAt: '2026-10-06T10:00:00Z',
+    });
+    await exportRun(reopened, directory);
+    const [row] = readCsv(directory, 'candidates.csv');
+    expect(JSON.parse(row.metadata_json)).toEqual(metadata);
+    expect(row.pushed_at_observed_at).toBe('2026-10-06T10:01:00Z');
+    expect(row.pushed_at_source).toBe('search');
+    expect(row.scope).toBe('in_scope');
+    expect(records()).toEqual(before);
+    expect(schema()).toEqual(beforeSchema);
+    expect(
+      raw
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE name = 'hits_repository_observation'",
+        )
+        .get(),
+    ).toHaveProperty(
+      'sql',
+      expect.stringContaining('(repository_id, fetched_at, subquery_id, path)'),
+    );
+    expect(raw.prepare('PRAGMA user_version').get()).toEqual({
+      user_version: 2,
+    });
+    raw.close();
+  });
+
   it('should export each candidate once with scope and discovering strategies', async () => {
     const { directory, store, save } = setup();
     save('query-a', [
