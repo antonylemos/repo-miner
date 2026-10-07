@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { createProgress } from '../src/cli/progress.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createDiscoveryProgress,
+  createProgress,
+} from '../src/cli/progress.js';
 
 function fakeStream(isTTY: boolean, columns = 120) {
   const writes: string[] = [];
@@ -75,4 +78,22 @@ describe('createProgress', () => {
 
     expect(writes.at(-1)?.replace('\r\x1b[2K', '')).toHaveLength(19);
   });
+});
+
+it('maps search, metadata and activity progress phases', () => {
+  const progress = {
+    start: vi.fn(),
+    update: vi.fn(),
+    wait: vi.fn(),
+    done: vi.fn(),
+  };
+  const report = createDiscoveryProgress(progress);
+  for (const phase of ['search', 'metadata', 'activity'] as const)
+    report({ phase, done: 1, total: 2, label: 'repo' });
+  expect(progress.start.mock.calls).toEqual([
+    ['Buscando', 2],
+    ['Enriquecendo', 2],
+    ['Coletando atividade', 2],
+  ]);
+  expect(progress.update).toHaveBeenCalledTimes(3);
 });

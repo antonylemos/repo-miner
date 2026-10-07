@@ -1,17 +1,36 @@
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
-import { catalogHash, parseCatalog } from '../discovery/catalog.js';
+import { catalogHash } from '../discovery/catalog.js';
+import { createActivityHooks } from '../discovery/collection.js';
+import { createActivityClient } from '../discovery/collectors/github-activity.js';
+import {
+  type CollectionLimits,
+  DEFAULT_COLLECTION_LIMITS,
+} from '../discovery/collectors/types.js';
+import type { StudyConfig } from '../discovery/eligibility/types.js';
 import { createEnrichmentClient } from '../discovery/enrichment.js';
-import { expandCatalog } from '../discovery/expansion.js';
 import { createGitHubClient } from '../discovery/github.js';
 import type { HttpClientOptions } from '../discovery/http.js';
+import { runProtocolDiscovery } from '../discovery/protocol-runner.js';
+import { exportProtocolRun } from '../discovery/report/protocol-report.js';
 import { type ExportProgress, exportRun } from '../discovery/report.js';
 import { runDiscovery } from '../discovery/runner.js';
-import type { DiscoveryStore } from '../discovery/storage.js';
-import type { Catalog } from '../discovery/types.js';
-import { createProgress, type Progress } from './progress.js';
+import { inspectVersion } from '../discovery/storage/connection.js';
+import { openProtocolStore } from '../discovery/storage/protocol-store.js';
+import { openRunStore } from '../discovery/storage/run-store.js';
+import { openStore } from '../discovery/storage.js';
+import {
+  parseStudyConfig,
+  prepareSearchPlan,
+} from '../discovery/study-config.js';
+import {
+  createDiscoveryProgress,
+  createProgress,
+  type Progress,
+} from './progress.js';
 
 const RESULT_CAP = 1000;
 
@@ -35,6 +54,23 @@ export async function main(
     .command('discover')
     .description('Search GitHub, resume an existing run, or preview totals.')
     .option('--queries <file>', 'query catalog JSON file')
+    .option('--protocol <file>', 'eligibility protocol JSON file (catalog v3)')
+    .option(
+      '--activity-max-requests <number>',
+      'activity attempts per candidate/invocation (default: 20)',
+    )
+    .option(
+      '--activity-commits-per-page <number>',
+      'commits per page (default: 30)',
+    )
+    .option(
+      '--activity-branches-per-page <number>',
+      'branches per page (default: 100)',
+    )
+    .option(
+      '--activity-max-duration-ms <number>',
+      'active collection duration per candidate/invocation',
+    )
     .option('--output <directory>', 'new run output directory')
     .option('--resume <directory>', 'resume an existing run directory')
     .option(
@@ -43,12 +79,18 @@ export async function main(
     )
     .action(async (options: DiscoverOptions) => {
       const command = parseDiscoverOptions(options);
+      const limits = collectionLimits(command);
+      const config = command.resume
+        ? validateResume(command)
+        : readStudyConfig(command);
+      if (config?.kind === 'legacy' && hasActivityOptions(command))
+        throw new Error('Activity options require a version 3 catalog.');
       if (!env.GITHUB_TOKEN?.trim()) {
         throw new Error('GITHUB_TOKEN is required for discovery.');
       }
       actionCode = command.dryRun
-        ? await dryRun(command.queries as string, env.GITHUB_TOKEN)
-        : await discover(command, env.GITHUB_TOKEN);
+        ? await dryRun(config as StudyConfig, env.GITHUB_TOKEN)
+        : await discover(command, env.GITHUB_TOKEN, config, limits);
     });
 
   program
@@ -60,11 +102,11 @@ export async function main(
       if (!existsSync(databasePath)) {
         throw new Error('The run directory does not contain discovery.sqlite.');
       }
-      const { openStore } = await import('../discovery/storage.js');
-      const store = openStore(databasePath);
+      const opened = openRunStore(databasePath);
+      const store = opened.store;
       const progress = createProgress();
       try {
-        await exportRun(store, options.run, exportProgress(progress));
+        await exportOpenedRun(opened, options.run, progress);
       } finally {
         progress.done();
         store.close();
@@ -89,10 +131,19 @@ type DiscoverOptions = {
   output?: string;
   resume?: string;
   dryRun?: boolean;
+  protocol?: string;
+  activityMaxRequests?: string;
+  activityCommitsPerPage?: string;
+  activityBranchesPerPage?: string;
+  activityMaxDurationMs?: string;
 };
 
 function parseDiscoverOptions(options: DiscoverOptions): DiscoverOptions {
   if (options.dryRun) {
+    if (hasActivityOptions(options))
+      throw new Error(
+        '--dry-run cannot collect activity or accept activity budgets.',
+      );
     if (options.output || options.resume || !options.queries) {
       throw new Error(
         '--dry-run requires --queries and cannot be combined with --output or --resume.',
@@ -100,8 +151,13 @@ function parseDiscoverOptions(options: DiscoverOptions): DiscoverOptions {
     }
     return options;
   }
-  if (options.resume && (options.queries || options.output)) {
-    throw new Error('--resume cannot be combined with --queries or --output.');
+  if (
+    options.resume &&
+    (options.queries || options.output || options.protocol)
+  ) {
+    throw new Error(
+      '--resume cannot be combined with --queries, --protocol or --output.',
+    );
   }
   if (!options.resume && (!options.queries || !options.output)) {
     throw new Error('discover requires --queries and --output, or --resume.');
@@ -109,8 +165,107 @@ function parseDiscoverOptions(options: DiscoverOptions): DiscoverOptions {
   return options;
 }
 
-function readCatalog(path: string): Catalog {
-  return parseCatalog(JSON.parse(readFileSync(path, 'utf8')) as unknown);
+function readStudyConfig(command: DiscoverOptions): StudyConfig {
+  return parseStudyConfig(
+    JSON.parse(readFileSync(command.queries as string, 'utf8')) as unknown,
+    command.protocol
+      ? (JSON.parse(readFileSync(command.protocol, 'utf8')) as unknown)
+      : undefined,
+  );
+}
+
+function hasActivityOptions(command: DiscoverOptions): boolean {
+  return [
+    command.activityMaxRequests,
+    command.activityCommitsPerPage,
+    command.activityBranchesPerPage,
+    command.activityMaxDurationMs,
+  ].some((value) => value !== undefined);
+}
+
+function collectionLimits(command: DiscoverOptions): CollectionLimits {
+  const positive = (
+    value: string | undefined,
+    fallback: number,
+    label: string,
+    maximum = Number.MAX_SAFE_INTEGER,
+  ): number => {
+    const number = value === undefined ? fallback : Number(value);
+    if (!Number.isSafeInteger(number) || number <= 0 || number > maximum)
+      throw new Error(`${label} must be a positive integer <= ${maximum}.`);
+    return number;
+  };
+  return {
+    maxActivityRequestsPerCandidate: positive(
+      command.activityMaxRequests,
+      DEFAULT_COLLECTION_LIMITS.maxActivityRequestsPerCandidate,
+      '--activity-max-requests',
+    ),
+    commitsPerPage: positive(
+      command.activityCommitsPerPage,
+      DEFAULT_COLLECTION_LIMITS.commitsPerPage,
+      '--activity-commits-per-page',
+      100,
+    ),
+    branchesPerPage: positive(
+      command.activityBranchesPerPage,
+      DEFAULT_COLLECTION_LIMITS.branchesPerPage,
+      '--activity-branches-per-page',
+      100,
+    ),
+    maxActivityDurationMs:
+      command.activityMaxDurationMs === undefined
+        ? null
+        : positive(
+            command.activityMaxDurationMs,
+            1,
+            '--activity-max-duration-ms',
+          ),
+  };
+}
+
+/** Validate stored policy read-only before opening a writer or making HTTP requests. */
+function validateResume(command: DiscoverOptions): null {
+  const path = join(command.resume as string, 'discovery.sqlite');
+  const version = inspectVersion(path);
+  if (version !== 2 && version !== 3)
+    throw new Error(
+      `Unsupported discovery database schema (version ${version})`,
+    );
+  if (version === 2 && hasActivityOptions(command))
+    throw new Error('Activity options require a schema 3 run.');
+  if (version === 3) {
+    const db = new DatabaseSync(path, { readOnly: true });
+    try {
+      const row = db.prepare('SELECT config_json FROM runs LIMIT 1').get();
+      if (!row) throw new Error('No discovery run has been created');
+      const config = JSON.parse(String(row.config_json)) as {
+        kind?: unknown;
+        catalog?: unknown;
+        protocol?: unknown;
+      };
+      if (
+        config.kind !== 'protocol' ||
+        config.protocol === undefined ||
+        parseStudyConfig(config.catalog, config.protocol).kind !== 'protocol'
+      )
+        throw new Error('Invalid stored protocol configuration');
+    } finally {
+      db.close();
+    }
+  }
+  return null;
+}
+
+type OpenedRun = ReturnType<typeof openRunStore>;
+async function exportOpenedRun(
+  opened: OpenedRun,
+  directory: string,
+  progress: Progress,
+): Promise<void> {
+  if (opened.version === 3)
+    await exportProtocolRun(opened.store, directory, exportProgress(progress));
+  else await exportRun(opened.store, directory, exportProgress(progress));
 }
 
 function today(): string {
@@ -151,8 +306,8 @@ async function withInterrupt<T>(
   }
 }
 
-async function dryRun(queriesPath: string, token: string): Promise<number> {
-  const subqueries = expandCatalog(readCatalog(queriesPath), today());
+async function dryRun(config: StudyConfig, token: string): Promise<number> {
+  const subqueries = prepareSearchPlan(config, today());
   const progress = createProgress();
   const client = createGitHubClient(clientOptions(token, progress));
   try {
@@ -188,76 +343,106 @@ async function dryRun(queriesPath: string, token: string): Promise<number> {
 async function discover(
   command: DiscoverOptions,
   token: string,
+  config: StudyConfig | null,
+  limits: CollectionLimits,
 ): Promise<number> {
   const outputDir = command.resume ?? (command.output as string);
   const databasePath = join(outputDir, 'discovery.sqlite');
-  if (command.resume && !existsSync(databasePath)) {
-    throw new Error('The resume directory does not contain discovery.sqlite.');
-  }
-  if (!command.resume && existsSync(databasePath)) {
+  if (!command.resume && existsSync(databasePath))
     throw new Error('The output directory already contains discovery.sqlite.');
-  }
-  const catalog = command.resume
-    ? null
-    : readCatalog(command.queries as string);
-
-  let store: DiscoveryStore | undefined;
+  let opened: OpenedRun | undefined;
   const progress = createProgress();
   try {
     return await withInterrupt(token, async (signal) => {
-      const { openStore } = await import('../discovery/storage.js');
-      if (catalog) {
-        mkdirSync(outputDir, { recursive: true });
-        store = openStore(databasePath);
+      if (config) {
         const startedAt = new Date().toISOString();
         const expansionDate = startedAt.slice(0, 10);
-        store.createRun({
-          catalog,
-          hash: catalogHash(catalog),
-          startedAt,
-          expansionDate,
-          subqueries: expandCatalog(catalog, expansionDate),
-        });
-      } else {
-        store = openStore(databasePath);
-      }
-
+        const subqueries = prepareSearchPlan(config, expansionDate);
+        mkdirSync(outputDir, { recursive: true });
+        if (config.kind === 'protocol') {
+          const store = openProtocolStore(databasePath);
+          opened = { version: 3, store };
+          store.createRun({
+            config,
+            startedAt,
+            expansionDate,
+            subqueries,
+            limits,
+          });
+        } else {
+          const store = openStore(databasePath);
+          opened = { version: 2, store };
+          store.createRun({
+            catalog: config.catalog,
+            hash: catalogHash(config.catalog),
+            startedAt,
+            expansionDate,
+            subqueries,
+          });
+        }
+      } else opened = openRunStore(databasePath);
       const options = clientOptions(token, progress);
-      let phase = '';
-      const result = await runDiscovery({
-        store,
-        client: createGitHubClient(options),
-        enrichmentClient: createEnrichmentClient(options),
-        signal,
-        now: () => new Date().toISOString(),
-        onProgress: (event) => {
-          if (event.phase !== phase) {
-            phase = event.phase;
-            progress.start(
-              phase === 'search' ? 'Buscando' : 'Enriquecendo',
-              event.total,
-            );
-          }
-          progress.update(event.done, event.label);
-        },
-      });
-      await exportRun(store, outputDir, exportProgress(progress));
+      const onProgress = createDiscoveryProgress(progress);
+      let state: string;
+      let id: string;
+      if (opened.version === 3) {
+        const store = opened.store;
+        const result = await runProtocolDiscovery({
+          store,
+          client: createGitHubClient(options),
+          metadataClient: createEnrichmentClient(
+            options,
+            'facts',
+            (targets, event) => {
+              const invocation = store.getRun().invocations.at(-1);
+              if (!invocation) throw new Error('Missing active invocation');
+              store.saveMetadataAttempt(
+                invocation.id,
+                targets.map((target) => target.repositoryId),
+                event,
+              );
+            },
+          ),
+          makeActivityClient: (task, invocationId) =>
+            createActivityClient(
+              options,
+              limits,
+              createActivityHooks(store, task, invocationId, limits),
+            ),
+          limits,
+          signal,
+          now: () => new Date().toISOString(),
+          onProgress,
+        });
+        ({ state, id } = result.run);
+      } else {
+        const result = await runDiscovery({
+          store: opened.store,
+          client: createGitHubClient(options),
+          enrichmentClient: createEnrichmentClient(options),
+          signal,
+          now: () => new Date().toISOString(),
+          onProgress,
+        });
+        ({ state, id } = result.run);
+      }
+      await exportOpenedRun(opened, outputDir, progress);
       progress.done();
-      console.log(`Run ${result.run.id}: ${result.run.state}`);
-      return result.run.state === 'complete' ? 0 : 2;
+      console.log(`Run ${id}: ${state}`);
+      return state === 'complete' ? 0 : 2;
     });
   } catch (error) {
-    if (store) {
+    if (opened) {
       try {
-        await exportRun(store, outputDir, exportProgress(progress));
+        await exportOpenedRun(opened, outputDir, progress);
       } catch {
-        // Keep the original discovery or export error for the caller.
+        /* Keep the original error. */
       }
     }
     throw error;
   } finally {
     progress.done();
-    store?.close();
+    opened?.store.close();
   }
 }
 

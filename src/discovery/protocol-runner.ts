@@ -8,7 +8,7 @@ import { runSearch } from './search.js';
 import type { ProtocolRun, ProtocolStore } from './storage/protocol-store.js';
 import type { Coverage, EnrichmentClient, SearchClient } from './types.js';
 export type ProtocolProgressEvent = {
-  phase: 'search' | 'collection';
+  phase: 'search' | 'metadata' | 'activity';
   done: number;
   total: number;
   label: string;

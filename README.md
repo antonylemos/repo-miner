@@ -4,7 +4,7 @@ CLI em TypeScript para descobrir repositórios públicos do GitHub a partir de u
 
 A ferramenta não depende de um tema. O tema de um estudo está no catálogo, e o código não sabe nada sobre ele. O mesmo processo serve a qualquer estudo de mineração de repositórios: adoção de uma tecnologia, uso de um padrão arquitetural, presença de uma prática.
 
-**O que a ferramenta faz:** executa buscas no GitHub, recupera integralmente cada consulta particionada, deduplica repositórios sem perder as origens, completa metadados, aplica um recorte por atividade recente e documenta a cobertura obtida.
+**O que a ferramenta faz:** executa buscas no GitHub, recupera integralmente cada consulta particionada, deduplica repositórios sem perder as origens, completa metadados, avalia regras opcionais de elegibilidade e documenta a cobertura obtida.
 
 **O que ela não faz:** não confirma que um candidato pertence ao fenômeno pesquisado, não classifica repositórios e não mede prevalência. Os candidatos seguem para triagem humana.
 
@@ -58,13 +58,45 @@ pnpm run cli discover --resume data/discovery/rodada-001
 pnpm run cli report --run data/discovery/rodada-001
 ```
 
-O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`. Rodadas existentes no formato SQLite v2 continuam aceitas; formatos anteriores já incompatíveis continuam rejeitados.
+O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`. Rodadas existentes no formato SQLite v2 continuam exportáveis e retomáveis sob o critério original, sem migração ou reinterpretação. Catálogo v2 combinado com protocolo externo é rejeitado com instrução de conversão para v3; opções explícitas de atividade também exigem v3. Formatos desconhecidos continuam rejeitados.
 
 As buscas de repositórios e de código executam em paralelo; dentro de cada endpoint, as subconsultas e suas páginas seguem em sequência. O enriquecimento GraphQL processa lotes completos durante as buscas e os candidatos restantes ao final.
 
 `report` recupera a análise de uma rodada v2 a partir dos hits REST já gravados, sem rede nem token. Ele regenera os arquivos, mas conserva o estado persistido da rodada: só `discover --resume` recalcula e grava esse estado. Erros antigos que não foram armazenados não podem ser reconstruídos; um enriquecimento antigo `ok` com push nulo não ganha um erro inventado nem é reenviado automaticamente.
 
-## Catálogo
+## Catálogo e protocolo v3
+
+Um catálogo v3 contém apenas `version: 3` e `queries`, com os mesmos campos de consulta descritos abaixo. As regras ficam em um arquivo separado passado por `--protocol`. Sem protocolo, a avaliação é `not_applied`: não há coleta de atividade nem filtro temporal implícito.
+
+```json
+{
+  "version": 1,
+  "eligibility": [
+    {
+      "id": "recent-human-commit",
+      "type": "recent_commit",
+      "since": "2025-04-01",
+      "dateField": "committedDate",
+      "branches": "all",
+      "authors": "human"
+    }
+  ]
+}
+```
+
+A regra procura ao menos um commit com autor humano desde meia-noite UTC inclusiva da data configurada, usando `committedDate`, em qualquer branch existente. A branch padrão tem prioridade operacional. O autor é a referência, independentemente do committer, merges, auto-merges, rebases ou cherry-picks. A janela termina no instante de inspeção persistido para o candidato. `last_push` é uma regra alternativa, baseada no último push; o catálogo e o protocolo ficam fixos ao criar a rodada.
+
+A coleta é opcional e dirigida pelas regras que ainda precisam de fatos. As opções `--activity-max-requests` (20), `--activity-commits-per-page` (30), `--activity-branches-per-page` (100) e `--activity-max-duration-ms` (sem teto por padrão) controlam a operação. Todos os valores são inteiros positivos, e páginas aceitam no máximo 100 itens. Cada tentativa de atividade, inclusive retry, consome o orçamento por candidato/invocação; a duração ativa inclui espera HTTP e retries, sem o tempo parado na fila. Resume pode mudar esses limites, registra nova invocação e preserva consumo e checkpoints anteriores; não aceita substituir `--queries` ou `--protocol`.
+
+Limite, falha ou autoria indeterminada produzem `unknown`, nunca reprovação automática. Uma ambiguidade terminal de autor com cobertura completa permite rodada `complete`; trabalho necessário ainda pendente, com erro ou limitado deixa a rodada parcial. A elegibilidade não confirma a presença do fenômeno pesquisado.
+
+Dry-run aceita protocolo e expande o plano de busca, consulta apenas totais e aponta saturação. Ele não coleta commits nem avalia elegibilidade dos candidatos e rejeita opções explícitas de orçamento de atividade. A regra recente de commit não acrescenta um filtro de push à busca.
+
+`report --run` exporta tanto schema 2 quanto schema 3 usando somente o SQLite local, sem token ou HTTP. Os cinco arquivos de exportação v3 são `candidates.csv` (elegibilidade, regras e evidências), `discovery-hits.csv` (origens), `coverage.json` (busca, avaliação e telemetria de coleta), `report.md` (diagnóstico) e `manifest.json` (configuração, hashes, ambiente e SHA-256). `discovery.sqlite` conserva os fatos, tarefas, checkpoints e invocações. As colunas antigas `scope` são específicas do formato legado.
+
+A execução de descoberta é serializada: apenas um processo ativo pode possuir uma rodada. Há proteção de propriedade dentro do processo; retomadas concorrentes em processos diferentes não são suportadas e exigiriam um lease externo. Execute `discover --resume` somente depois de encerrar o processo anterior.
+
+## Catálogo legado v2
 
 O catálogo é um arquivo JSON que descreve o que buscar e por quê. Exemplo mínimo:
 
@@ -94,7 +126,7 @@ O catálogo é um arquivo JSON que descreve o que buscar e por quê. Exemplo mí
 
 | Campo | Significado |
 | --- | --- |
-| `filters.pushedSince` | Recorte por atividade: só entram repositórios cujo **último push** ao GitHub ocorreu nessa data ou depois, até o momento da coleta. Veja [O que conta como atividade](#o-que-conta-como-atividade). |
+| `filters.pushedSince` | Recorte por atividade: só entram repositórios cujo **último push** ao GitHub ocorreu nessa data ou depois, até o momento da coleta. Veja [O que conta como atividade](#o-que-conta-como-atividade-no-legado-v2). |
 | `id` | Identificador único e estável da consulta. |
 | `strategy` | Procedimento de descoberta: `terminology` (termos que nomeiam o fenômeno), `technology` (tecnologias ou artefatos associados a ele) ou `broader` (termos amplos ou adjacentes, para reduzir viés de terminologia). |
 | `endpoint` | `repositories` (nome, descrição, README e tópicos) ou `code` (conteúdo de arquivos). |
@@ -104,18 +136,18 @@ O catálogo é um arquivo JSON que descreve o que buscar e por quê. Exemplo mí
 
 A API de busca devolve no máximo 1.000 resultados por consulta. A partição divide uma consulta grande em subconsultas menores, para que nenhum resultado seja perdido pelo corte do GitHub. Para mudar o catálogo, crie uma rodada nova; uma rodada sempre usa o catálogo gravado quando foi criada.
 
-### O que conta como atividade
+### O que conta como atividade no legado v2
 
 O recorte compara a data do **último push** do repositório (`pushed_at`, informada pelo GitHub) com `pushedSince`. Com `pushedSince: 2025-04-01`, um repositório entra quando recebeu algum push entre 01/04/2025 e o momento em que a ferramenta leu essa data. Na prática:
 
 - **Push não é commit.** O que conta é quando os commits chegaram ao GitHub, não a data registrada neles. Commits criados em março de 2025 e enviados em abril contam como atividade em abril.
 - **Qualquer branch conta.** Um push em um branch que não é o principal também atualiza a data, mesmo que o branch principal esteja parado.
 - **"Até hoje" significa até a coleta.** A data é lida quando o repositório aparece na busca ou quando seus metadados são completados; a coluna `pushed_at_observed_at` registra esse momento. Pushes posteriores à rodada não alteram o resultado dela.
-- **Atividade recente não é implementação recente.** Um repositório cuja estrutura foi criada anos antes e que recebeu apenas um ajuste recente entra no recorte. Se o estudo precisar de commits recentes no branch principal, esse é outro critério, que a ferramenta não aplica hoje.
+- **Atividade recente não é implementação recente.** Um repositório cuja estrutura foi criada anos antes e que recebeu apenas um ajuste recente entra no recorte. O protocolo v3 permite critérios de commits; rodadas v2 conservam esta semântica original.
 
 ## Saídas
 
-Cada rodada grava em seu diretório:
+Cada rodada legada v2 grava em seu diretório (as saídas v3 estão descritas acima):
 
 | Arquivo | Conteúdo |
 | --- | --- |
@@ -136,9 +168,9 @@ Cada exportação lê uma fotografia consistente do SQLite, incluindo CSV, cober
 
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada em que todas as subconsultas terminaram `complete` e nenhum enriquecimento ainda necessário ficou `pending` ou `failed`.
+- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
 - `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato anterior, ou falha de requisição no dry-run.
-- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento ainda necessário pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados.
+- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados.
 
 ## Limitações
 
@@ -161,7 +193,7 @@ O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-front
 
 **Decisões do estudo:**
 
-- **Recorte por atividade** (`pushedSince: 2025-04-01`): prioriza repositórios com algum push nos 18 meses entre 01/04/2025 e a data da coleta, sem excluir projetos antigos que continuam mantidos. O critério é o último push, não a data dos commits nem a data em que a arquitetura MFE foi introduzida (veja [O que conta como atividade](#o-que-conta-como-atividade)).
+- **Protocolo de atividade** ([`config/protocols/micro-frontends.json`](config/protocols/micro-frontends.json)): exige commit de autor humano com `committedDate` desde 01/04/2025 em qualquer branch existente. O catálogo v3 mantém as mesmas 28 consultas. O critério não data a introdução da arquitetura MFE.
 - **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 8 e 13 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
 - **Termos com hífen entre aspas:** sem aspas, `single-spa` é lido como "single" e "spa" (356 mil resultados contra 6 mil com aspas).
 - **Tecnologias fixadas:** a estratégia `technology` cobre apenas Module Federation, single-spa e Web Components. Frameworks como qiankun, wujie, micro-app e Piral ficam de fora; repositórios que os usam e se descrevem como MFE ainda chegam pela terminologia.
@@ -171,8 +203,8 @@ O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-front
 **Execução:**
 
 ```sh
-pnpm run cli discover --queries config/catalogs/micro-frontends.json --dry-run > dry-run.md
-pnpm run cli discover --queries config/catalogs/micro-frontends.json --output data/discovery/mfe-rodada-001
+pnpm run cli discover --queries config/catalogs/micro-frontends.json --protocol config/protocols/micro-frontends.json --dry-run > dry-run.md
+pnpm run cli discover --queries config/catalogs/micro-frontends.json --protocol config/protocols/micro-frontends.json --output data/discovery/mfe-rodada-001
 ```
 
 O [PROCESS.md](PROCESS.md) acompanha uma consulta deste catálogo do início ao fim.

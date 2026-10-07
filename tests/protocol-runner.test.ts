@@ -131,7 +131,11 @@ describe('protocol runner', () => {
   });
   it('search_metadata_does_not_satisfy_commit_rule and human_merge_stops_without_pr_requests', async () => {
     const { store, options, activity } = fixture();
-    const result = await runProtocolDiscovery(options);
+    const onProgress = vi.fn();
+    const result = await runProtocolDiscovery({ ...options, onProgress });
+    expect(onProgress.mock.calls.map(([event]) => event.phase)).toEqual(
+      expect.arrayContaining(['search', 'metadata', 'activity']),
+    );
     expect(result.run.state).toBe('complete');
     expect(options.metadataClient.fetchRepositories).toHaveBeenCalledOnce();
     expect(activity.listCommits).toHaveBeenCalledOnce();

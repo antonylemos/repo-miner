@@ -9,6 +9,7 @@ import {
 } from './collectors/types.js';
 import { evaluateProtocol } from './eligibility/evaluate.js';
 import type { FactRequest } from './eligibility/types.js';
+import type { ProtocolProgressEvent } from './protocol-runner.js';
 import type { ProtocolStore } from './storage/protocol-store.js';
 import type { EnrichmentClient } from './types.js';
 
@@ -41,6 +42,7 @@ export type CollectionSchedulerOptions = {
   limits: CollectionLimits;
   signal: AbortSignal;
   now: () => string;
+  onProgress?: (event: ProtocolProgressEvent) => void;
 };
 export function createCollectionScheduler(options: CollectionSchedulerOptions) {
   const {
@@ -52,6 +54,23 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
     signal,
     now,
   } = options;
+  const reportProgress = (phase: 'metadata' | 'activity', label: string) => {
+    const kind =
+      phase === 'metadata' ? 'repository_metadata' : 'commit_history';
+    const tasks = store
+      .readTasks()
+      .filter(
+        (task) => task.request.kind === kind && task.state !== 'cancelled',
+      );
+    options.onProgress?.({
+      phase,
+      total: tasks.length,
+      done: tasks.filter((task) =>
+        ['complete', 'failed', 'limited'].includes(task.state),
+      ).length,
+      label,
+    });
+  };
   const stopped = new Set<string>();
   const clients = new Map<string, ActivityClient>();
   let wake = () => {};
@@ -246,12 +265,16 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
       .filter((t) => t.request.kind === 'repository_metadata')
       .slice(0, 100);
     if (batch.length) {
+      reportProgress('metadata', `lote de ${batch.length} repositórios`);
       await metadata(batch);
+      reportProgress('metadata', `lote de ${batch.length} repositórios`);
       return true;
     }
     const task = tasks.find((t) => t.request.kind === 'commit_history');
     if (task) {
+      reportProgress('activity', `repositório ${task.repositoryId}`);
       await activity(task);
+      reportProgress('activity', `repositório ${task.repositoryId}`);
       return true;
     }
     return false;

@@ -1,20 +1,41 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { parseCatalog } from '../src/discovery/catalog.js';
-import { expandCatalog } from '../src/discovery/expansion.js';
+import {
+  parseStudyConfig,
+  prepareSearchPlan,
+} from '../src/discovery/study-config.js';
 
-const catalog = parseCatalog(
+const config = parseStudyConfig(
   JSON.parse(
     readFileSync(
       new URL('../config/catalogs/micro-frontends.json', import.meta.url),
       'utf8',
     ),
   ),
+  JSON.parse(
+    readFileSync(
+      new URL('../config/protocols/micro-frontends.json', import.meta.url),
+      'utf8',
+    ),
+  ),
 );
+const catalog = config.catalog;
 
 describe('configured discovery catalog', () => {
-  it('should declare the approved queries with the activity filter', () => {
-    expect(catalog.filters.pushedSince).toBe('2025-04-01');
+  it('should declare approved queries separately from the human activity protocol', () => {
+    expect(config.kind).toBe('protocol');
+    expect(catalog.version).toBe(3);
+    if (config.kind === 'protocol')
+      expect(config.protocol.eligibility).toEqual([
+        {
+          id: 'recent-human-commit',
+          type: 'recent_commit',
+          since: '2025-04-01',
+          dateField: 'committedDate',
+          branches: 'all',
+          authors: 'human',
+        },
+      ]);
     expect(catalog.queries).toHaveLength(28);
     const count = (strategy: string) =>
       catalog.queries.filter((q) => q.strategy === strategy).length;
@@ -44,12 +65,10 @@ describe('configured discovery catalog', () => {
   });
 
   it('should expand into unique subqueries', () => {
-    const subqueries = expandCatalog(catalog, '2026-10-05');
+    const subqueries = prepareSearchPlan(config, '2026-10-05');
     expect(new Set(subqueries.map((s) => s.id)).size).toBe(subqueries.length);
     for (const subquery of subqueries) {
-      if (subquery.endpoint === 'repositories')
-        expect(subquery.q).toContain('pushed:>=2025-04-01');
-      else expect(subquery.q).not.toContain('pushed:');
+      expect(subquery.q).not.toContain('pushed:');
     }
   });
 });

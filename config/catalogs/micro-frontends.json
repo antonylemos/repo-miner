@@ -1,6 +1,5 @@
 {
-  "version": 2,
-  "filters": { "pushedSince": "2025-04-01" },
+  "version": 3,
   "queries": [
     {
       "id": "terminology-topic-microfrontend",

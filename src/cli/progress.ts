@@ -1,3 +1,5 @@
+import type { ProtocolProgressEvent } from '../discovery/protocol-runner.js';
+
 const BAR_WIDTH = 24;
 /** Estimates from the first few seconds of a phase are mostly noise. */
 const ETA_AFTER_MS = 5_000;
@@ -103,4 +105,31 @@ function formatDuration(ms: number): string {
   if (minutes < 60)
     return `${minutes}m${String(seconds % 60).padStart(2, '0')}s`;
   return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
+}
+
+/** Maps discovery phase events to the terminal presentation. */
+export function createDiscoveryProgress(
+  progress: Progress,
+): (
+  event:
+    | ProtocolProgressEvent
+    | { phase: 'enrichment'; done: number; total: number; label: string },
+) => void {
+  let phase = '';
+  let total = -1;
+  return (event) => {
+    if (phase !== event.phase || total !== event.total) {
+      phase = event.phase;
+      total = event.total;
+      progress.start(
+        event.phase === 'search'
+          ? 'Buscando'
+          : event.phase === 'activity'
+            ? 'Coletando atividade'
+            : 'Enriquecendo',
+        event.total,
+      );
+    }
+    progress.update(event.done, event.label);
+  };
 }

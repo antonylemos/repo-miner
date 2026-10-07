@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "eligibility": [
+    {
+      "id": "recent-human-commit",
+      "type": "recent_commit",
+      "since": "2025-04-01",
+      "dateField": "committedDate",
+      "branches": "all",
+      "authors": "human"
+    }
+  ]
+}
