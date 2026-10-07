@@ -1,3 +1,14 @@
+export type HttpAttemptEvent = {
+  attempt: number;
+  startedAt: number;
+  finishedAt: number;
+  waitMs: number;
+  status: number | null;
+  responseBytes: number | null;
+  rateLimitResource: string | null;
+  rateLimitUsed: number | null;
+  error: string | null;
+};
 const API_VERSION = '2026-03-10';
 const MAX_ATTEMPTS = 3;
 const REQUEST_TIMEOUT_MS = 30_000;

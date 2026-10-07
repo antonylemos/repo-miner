@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname, posix } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { isUsablePush } from './scope.js';
+import {
+  openConnection,
+  SEARCH_SCHEMA,
+  transaction as transact,
+} from './storage/connection.js';
+import {
+  CANDIDATE_OBSERVATIONS_SELECT,
+  createSearchData,
+} from './storage/search-data.js';
 import type {
   Catalog,
   Checkpoint,
@@ -85,7 +92,6 @@ export interface DiscoveryStore {
   close(): void;
 }
 
-const SCHEMA_VERSION = 2;
 const SCHEMA = `
   PRAGMA foreign_keys = ON;
   CREATE TABLE IF NOT EXISTS runs (
@@ -97,130 +103,25 @@ const SCHEMA = `
     ended_at TEXT,
     state TEXT NOT NULL CHECK (state IN ('running', 'complete', 'partial'))
   );
-  CREATE TABLE IF NOT EXISTS queries (
-    query_id TEXT PRIMARY KEY,
-    ordinal INTEGER NOT NULL UNIQUE,
-    strategy TEXT NOT NULL CHECK (strategy IN ('terminology', 'technology', 'broader')),
-    endpoint TEXT NOT NULL CHECK (endpoint IN ('repositories', 'code')),
-    q TEXT NOT NULL,
-    rationale TEXT NOT NULL,
-    partition_json TEXT
-  );
-  CREATE TABLE IF NOT EXISTS subqueries (
-    subquery_id TEXT PRIMARY KEY,
-    query_id TEXT NOT NULL REFERENCES queries(query_id),
-    ordinal INTEGER NOT NULL UNIQUE,
-    q_effective TEXT NOT NULL,
-    partition_label TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS pages (
-    subquery_id TEXT NOT NULL REFERENCES subqueries(subquery_id),
-    page INTEGER NOT NULL CHECK (page >= 1),
-    total_count INTEGER NOT NULL CHECK (total_count >= 0),
-    incomplete INTEGER NOT NULL CHECK (incomplete IN (0, 1)),
-    fetched_at TEXT NOT NULL,
-    result_json TEXT NOT NULL,
-    PRIMARY KEY (subquery_id, page)
-  );
-  CREATE TABLE IF NOT EXISTS candidates (
-    repository_id INTEGER PRIMARY KEY,
-    node_id TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    url TEXT NOT NULL,
-    metadata_json TEXT NOT NULL,
-    first_seen_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS hits (
-    subquery_id TEXT NOT NULL REFERENCES subqueries(subquery_id),
-    query_id TEXT NOT NULL REFERENCES queries(query_id),
-    repository_id INTEGER NOT NULL REFERENCES candidates(repository_id),
-    path TEXT NOT NULL,
-    url TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    repository_url TEXT NOT NULL,
-    metadata_json TEXT NOT NULL,
-    fetched_at TEXT NOT NULL,
-    PRIMARY KEY (subquery_id, repository_id, path)
-  );
-  CREATE TABLE IF NOT EXISTS checkpoints (
-    subquery_id TEXT PRIMARY KEY REFERENCES subqueries(subquery_id),
-    next_page INTEGER CHECK (next_page IS NULL OR next_page >= 1),
-    state TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'partial', 'failed')),
-    reason TEXT
-  );
-  CREATE TABLE IF NOT EXISTS enrichments (
-    repository_id INTEGER PRIMARY KEY REFERENCES candidates(repository_id),
-    status TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'not_found', 'failed')),
-    fetched_at TEXT,
-    data_json TEXT,
-    reason TEXT
-  );
-  CREATE INDEX IF NOT EXISTS hits_repository_observation
-    ON hits (repository_id, fetched_at, subquery_id, path);
-`;
-
-const SUBQUERY_SELECT = `
-  SELECT s.subquery_id, s.query_id, q.strategy, q.endpoint, s.q_effective, s.partition_label
-  FROM subqueries s JOIN queries q ON q.query_id = s.query_id`;
-
-// Select all repository fields from one observation, preserving the original first encounter.
-const CANDIDATE_OBSERVATIONS_SELECT = `
-  SELECT c.repository_id, c.node_id,
-         COALESCE(h.full_name, c.full_name) AS full_name,
-         COALESCE(h.repository_url, c.url) AS url,
-         COALESCE(h.metadata_json, c.metadata_json) AS metadata_json,
-         COALESCE(h.fetched_at, c.first_seen_at) AS metadata_observed_at,
-         c.first_seen_at, e.status, e.fetched_at, e.data_json, e.reason
-  FROM candidates c
-  LEFT JOIN hits h ON h.rowid = (
-    SELECT observation.rowid FROM hits observation
-    JOIN queries q ON q.query_id = observation.query_id
-    WHERE observation.repository_id = c.repository_id AND q.endpoint = 'repositories'
-    ORDER BY is_usable_push(json_extract(observation.metadata_json, '$.pushed_at')) DESC,
-             observation.fetched_at, observation.subquery_id, observation.path
-    LIMIT 1
-  )
-  LEFT JOIN enrichments e ON e.repository_id = c.repository_id`;
+${SEARCH_SCHEMA}`;
 
 /** Opens a run database and creates its schema if needed. */
 export function openStore(path: string): DiscoveryStore {
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-  const database = new DatabaseSync(path);
+  const database = openConnection(path, 2, SCHEMA);
   try {
-    return initializeStore(database, path);
+    return initializeStore(database);
   } catch (error) {
     database.close();
     throw error;
   }
 }
 
-function initializeStore(database: DatabaseSync, path: string): DiscoveryStore {
-  assertSupportedSchema(database);
-  database.exec('PRAGMA busy_timeout = 5000');
-  if (path !== ':memory:') {
-    const mode = database
-      .prepare('PRAGMA journal_mode = WAL')
-      .get() as StoredRow;
-    if (mode.journal_mode !== 'wal') {
-      throw new Error('Discovery database requires WAL journal mode');
-    }
-  }
-  database.exec(SCHEMA);
-  database.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+function initializeStore(database: DatabaseSync): DiscoveryStore {
   database.function('is_usable_push', { deterministic: true }, (value) =>
     isUsablePush(value) ? 1 : 0,
   );
 
-  const transaction = (work: () => void): void => {
-    database.exec('BEGIN IMMEDIATE');
-    try {
-      work();
-      database.exec('COMMIT');
-    } catch (error) {
-      database.exec('ROLLBACK');
-      throw error;
-    }
-  };
+  const transaction = (work: () => void): void => transact(database, work);
 
   const getRunRow = (): StoredRow => {
     const row = database.prepare('SELECT * FROM runs LIMIT 1').get() as
@@ -230,93 +131,10 @@ function initializeStore(database: DatabaseSync, path: string): DiscoveryStore {
     return row;
   };
 
-  const assertSubqueryMatches = (subquery: Subquery): void => {
-    const row = database
-      .prepare(`${SUBQUERY_SELECT} WHERE s.subquery_id = ?`)
-      .get(subquery.id) as StoredRow | undefined;
-    if (!row || !sameSubquery(toSubquery(row), subquery)) {
-      throw new Error(
-        `Subquery "${subquery.id}" does not match the stored expansion`,
-      );
-    }
-  };
-
-  const readPageTotals = database.prepare(
-    `SELECT COUNT(*) AS pages,
-            COALESCE(SUM(json_array_length(result_json, '$.hits')), 0) AS hits,
-            COALESCE(MAX(total_count), 0) AS total,
-            COALESCE(MAX(incomplete), 0) AS incomplete
-     FROM pages WHERE subquery_id = ?`,
-  );
-  const countCandidates = database.prepare(
-    'SELECT COUNT(DISTINCT repository_id) AS count FROM hits WHERE subquery_id = ?',
-  );
-  const coverageFor = (row: StoredRow): Coverage => {
-    const subqueryId = String(row.subquery_id);
-    const totals = readPageTotals.get(subqueryId) as StoredRow;
-    const reason = row.reason === null ? null : String(row.reason);
-    return {
-      subqueryId,
-      queryId: String(row.query_id),
-      fetchedPages: Number(totals.pages),
-      fetchedHits: Number(totals.hits),
-      uniqueCandidates: Number(
-        (countCandidates.get(subqueryId) as StoredRow).count,
-      ),
-      totalReported: Number(totals.total),
-      incomplete: Number(totals.incomplete) === 1,
-      capped:
-        reason !== null &&
-        /\b(?:cap|capped|saturated|saturation)\b/i.test(reason),
-      state: (row.state ?? 'pending') as Checkpoint['state'],
-      reason,
-    };
-  };
-  function* iterateCandidates(): Generator<StoredCandidate> {
-    const rows = database
-      .prepare(`${CANDIDATE_OBSERVATIONS_SELECT} ORDER BY c.repository_id`)
-      .iterate() as Iterable<StoredRow>;
-    for (const row of rows) {
-      yield {
-        id: Number(row.repository_id),
-        nodeId: String(row.node_id),
-        fullName: String(row.full_name),
-        url: String(row.url),
-        metadata: JSON.parse(String(row.metadata_json)) as Record<
-          string,
-          unknown
-        >,
-        firstSeenAt: String(row.first_seen_at),
-        metadataObservedAt:
-          row.metadata_observed_at === null
-            ? null
-            : String(row.metadata_observed_at),
-        enrichment:
-          row.status === null
-            ? null
-            : {
-                status: row.status as EnrichmentStatus,
-                fetchedAt:
-                  row.fetched_at === null ? null : String(row.fetched_at),
-                data:
-                  row.data_json === null
-                    ? null
-                    : (JSON.parse(String(row.data_json)) as Record<
-                        string,
-                        unknown
-                      >),
-                reason: row.reason === null ? null : String(row.reason),
-              },
-      };
-    }
-  }
-
-  const COVERAGE_SELECT = `
-    SELECT s.subquery_id, s.query_id, c.state, c.reason
-    FROM subqueries s LEFT JOIN checkpoints c ON c.subquery_id = s.subquery_id`;
-
+  const search = createSearchData(database, transaction);
   let snapshotActive = false;
   const store: DiscoveryStore = {
+    ...search,
     async withReadSnapshot(work) {
       if (snapshotActive)
         throw new Error(
@@ -436,112 +254,6 @@ function initializeStore(database: DatabaseSync, path: string): DiscoveryStore {
       };
     },
 
-    getSubqueries() {
-      const rows = database
-        .prepare(`${SUBQUERY_SELECT} ORDER BY s.ordinal`)
-        .all() as StoredRow[];
-      return rows.map(toSubquery);
-    },
-
-    getCheckpoint(subqueryId) {
-      const row = database
-        .prepare(
-          'SELECT subquery_id, next_page, state FROM checkpoints WHERE subquery_id = ?',
-        )
-        .get(subqueryId) as StoredRow | undefined;
-      if (!row) throw new Error(`Unknown subquery checkpoint "${subqueryId}"`);
-      return {
-        subqueryId: String(row.subquery_id),
-        nextPage: row.next_page === null ? null : Number(row.next_page),
-        state: row.state as Checkpoint['state'],
-      };
-    },
-
-    savePage(subquery, page, result, checkpoint, fetchedAt) {
-      if (checkpoint.subqueryId !== subquery.id) {
-        throw new Error(
-          'Checkpoint subquery id does not match the result subquery',
-        );
-      }
-      assertSubqueryMatches(subquery);
-
-      transaction(() => {
-        const committedPage = database
-          .prepare('SELECT 1 FROM pages WHERE subquery_id = ? AND page = ?')
-          .get(subquery.id, page);
-        if (committedPage) return;
-
-        const normalizedResult: SearchPage = {
-          ...result,
-          hits: result.hits.map((hit) => ({
-            ...hit,
-            path: normalizePath(hit.path) || null,
-          })),
-        };
-        database
-          .prepare(
-            'INSERT INTO pages (subquery_id, page, total_count, incomplete, fetched_at, result_json) VALUES (?, ?, ?, ?, ?, ?)',
-          )
-          .run(
-            subquery.id,
-            page,
-            result.totalCount,
-            result.incomplete ? 1 : 0,
-            fetchedAt,
-            JSON.stringify(normalizedResult),
-          );
-
-        const insertCandidate = database.prepare(
-          'INSERT OR IGNORE INTO candidates (repository_id, node_id, full_name, url, metadata_json, first_seen_at) VALUES (?, ?, ?, ?, ?, ?)',
-        );
-        const insertHit = database.prepare(
-          'INSERT OR IGNORE INTO hits (subquery_id, query_id, repository_id, path, url, full_name, repository_url, metadata_json, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        );
-        for (const hit of normalizedResult.hits) {
-          const candidate = hit.candidate;
-          const metadata = JSON.stringify(candidate.metadata);
-          insertCandidate.run(
-            candidate.id,
-            candidate.nodeId,
-            candidate.fullName,
-            candidate.url,
-            metadata,
-            fetchedAt,
-          );
-          insertHit.run(
-            subquery.id,
-            subquery.queryId,
-            candidate.id,
-            hit.path ?? '',
-            hit.url,
-            candidate.fullName,
-            candidate.url,
-            metadata,
-            fetchedAt,
-          );
-        }
-
-        database
-          .prepare(
-            'INSERT INTO checkpoints (subquery_id, next_page, state, reason) VALUES (?, ?, ?, NULL) ON CONFLICT(subquery_id) DO UPDATE SET next_page = excluded.next_page, state = excluded.state, reason = NULL',
-          )
-          .run(checkpoint.subqueryId, checkpoint.nextPage, checkpoint.state);
-      });
-    },
-
-    markSubquery(checkpoint, reason) {
-      database
-        .prepare(
-          'INSERT INTO checkpoints (subquery_id, next_page, state, reason) VALUES (?, ?, ?, ?) ON CONFLICT(subquery_id) DO UPDATE SET next_page = excluded.next_page, state = excluded.state, reason = excluded.reason',
-        )
-        .run(
-          checkpoint.subqueryId,
-          checkpoint.nextPage,
-          checkpoint.state,
-          reason,
-        );
-    },
-
     finish(result) {
       const current = getRunRow();
       if (current.id !== result.run.id) {
@@ -553,56 +265,10 @@ function initializeStore(database: DatabaseSync, path: string): DiscoveryStore {
     },
 
     readCandidates() {
-      return [...iterateCandidates()];
+      return [...search.iterateCandidates()];
     },
 
-    iterateCandidates,
-
-    readHits() {
-      const rows = database
-        .prepare(
-          `SELECT h.query_id, h.subquery_id, q.strategy, q.endpoint, s.q_effective,
-                  h.repository_id, c.node_id, h.path, h.url, h.full_name,
-                  h.repository_url, h.fetched_at
-           FROM hits h
-           JOIN subqueries s ON s.subquery_id = h.subquery_id
-           JOIN queries q ON q.query_id = h.query_id
-           JOIN candidates c ON c.repository_id = h.repository_id
-           ORDER BY h.query_id, h.subquery_id, h.repository_id, h.path`,
-        )
-        .all() as StoredRow[];
-      return rows.map((row) => ({
-        queryId: String(row.query_id),
-        subqueryId: String(row.subquery_id),
-        strategy: row.strategy as Strategy,
-        endpoint: row.endpoint as Endpoint,
-        qEffective: String(row.q_effective),
-        fetchedAt: String(row.fetched_at),
-        candidate: {
-          id: Number(row.repository_id),
-          nodeId: String(row.node_id),
-          fullName: String(row.full_name),
-          url: String(row.repository_url),
-        },
-        path: String(row.path) || null,
-        url: String(row.url),
-      }));
-    },
-
-    readCoverage() {
-      const rows = database
-        .prepare(`${COVERAGE_SELECT} ORDER BY s.ordinal`)
-        .all() as StoredRow[];
-      return rows.map(coverageFor);
-    },
-
-    readSubqueryCoverage(subqueryId) {
-      const row = database
-        .prepare(`${COVERAGE_SELECT} WHERE s.subquery_id = ?`)
-        .get(subqueryId) as StoredRow | undefined;
-      if (!row) throw new Error(`Unknown subquery "${subqueryId}"`);
-      return coverageFor(row);
-    },
+    iterateCandidates: search.iterateCandidates,
 
     queueEnrichment() {
       const result = database
@@ -700,48 +366,4 @@ function initializeStore(database: DatabaseSync, path: string): DiscoveryStore {
     },
   };
   return store;
-}
-
-/** Refuses databases written by an older schema instead of migrating them silently. */
-function assertSupportedSchema(database: DatabaseSync): void {
-  const hasTables = database
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' LIMIT 1")
-    .get();
-  const version = Number(
-    (database.prepare('PRAGMA user_version').get() as StoredRow).user_version,
-  );
-  if (hasTables && version !== SCHEMA_VERSION) {
-    throw new Error(
-      `Unsupported discovery database schema (version ${version}); start a new run with the current catalog format`,
-    );
-  }
-}
-
-function toSubquery(row: StoredRow): Subquery {
-  return {
-    id: String(row.subquery_id),
-    queryId: String(row.query_id),
-    strategy: row.strategy as Strategy,
-    endpoint: row.endpoint as Endpoint,
-    q: String(row.q_effective),
-    partitionLabel: String(row.partition_label),
-  };
-}
-
-function sameSubquery(left: Subquery, right: Subquery): boolean {
-  return (
-    left.id === right.id &&
-    left.queryId === right.queryId &&
-    left.strategy === right.strategy &&
-    left.endpoint === right.endpoint &&
-    left.q === right.q &&
-    left.partitionLabel === right.partitionLabel
-  );
-}
-
-/** Normalizes a repository-relative path before using it as hit identity. */
-function normalizePath(path: string | null): string {
-  if (path === null || path.length === 0) return '';
-  const normalized = posix.normalize(path.replaceAll('\\', '/'));
-  return normalized === '.' ? '' : normalized.replace(/^\/+/, '');
 }
