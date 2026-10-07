@@ -30,6 +30,8 @@ export type HttpRequest = {
   minimumIntervalMs: number;
   method?: 'GET' | 'POST';
   body?: string;
+  beforeAttempt?: () => void;
+  onAttemptFinished?: (event: HttpAttemptEvent) => void;
 };
 
 /** Sends GitHub API requests with per-lane pacing, timeouts, retries and token redaction. */
@@ -61,16 +63,29 @@ export function createHttpClient(options: HttpClientOptions) {
           await sleepAbortably(options.sleep, waitMs, signal, options.token);
         throwIfAborted(signal, options.token);
 
+        request.beforeAttempt?.();
         const startedAt = options.now();
         lane.nextRequestAt = Math.max(
           lane.nextRequestAt,
           startedAt + request.minimumIntervalMs,
         );
 
+        const event: HttpAttemptEvent = {
+          attempt: attempt + 1,
+          startedAt,
+          finishedAt: startedAt,
+          waitMs,
+          status: null,
+          responseBytes: null,
+          rateLimitResource: null,
+          rateLimitUsed: null,
+          error: null,
+        };
         let response: Response;
         try {
-          response = await fetchWithTimeout(options, request, signal);
+          response = await fetchWithTimeout(options, request, signal, event);
         } catch (error) {
+          event.error = redact(errorMessage(error), options.token);
           if (signal.aborted)
             throw sanitizedError(signal.reason, options.token);
           if (attempt === MAX_ATTEMPTS - 1) {
@@ -80,6 +95,9 @@ export function createHttpClient(options: HttpClientOptions) {
           }
           retryAt = options.now() + retryDelay(attempt);
           continue;
+        } finally {
+          event.finishedAt = options.now();
+          request.onAttemptFinished?.(event);
         }
 
         const retryHeaderAt = retryAfterAt(response.headers, options.now());
@@ -124,6 +142,7 @@ async function fetchWithTimeout(
   options: HttpClientOptions,
   request: HttpRequest,
   callerSignal: AbortSignal,
+  event: HttpAttemptEvent,
 ): Promise<Response> {
   const controller = new AbortController();
   const onCallerAbort = () => controller.abort(callerSignal.reason);
@@ -149,8 +168,17 @@ async function fetchWithTimeout(
       body: request.body,
       signal: controller.signal,
     });
+    event.status = response.status;
+    const resource = response.headers.get('x-ratelimit-resource');
+    event.rateLimitResource =
+      resource === null ? null : redact(resource, options.token);
+    const used = response.headers.get('x-ratelimit-used');
+    event.rateLimitUsed =
+      used !== null && /^\d+$/.test(used) && Number.isSafeInteger(Number(used))
+        ? Number(used)
+        : null;
     // Read a clone while the timer is active so a stalled response body also times out.
-    await response.clone().arrayBuffer();
+    event.responseBytes = (await response.clone().arrayBuffer()).byteLength;
     return response;
   } finally {
     clearTimeout(timeout);

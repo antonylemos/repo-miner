@@ -356,3 +356,115 @@ describe('enrichment client', () => {
     expect(error.message).not.toContain(TOKEN);
   });
 });
+
+it('legacy_query_is_unchanged', async () => {
+  let query = '';
+  await makeClient(async (_, init) => {
+    query = JSON.parse(String(init?.body)).query;
+    return json({ data: { nodes: [] } });
+  }).fetchRepositories([], new AbortController().signal);
+  expect(query).toContain('defaultBranchRef { name }');
+  expect(query).not.toContain('target { oid }');
+});
+it('facts_query_returns_default_head', async () => {
+  let query = '';
+  const observer = [] as unknown[];
+  const node = {
+    databaseId: 1,
+    nameWithOwner: 'renamed/repo',
+    defaultBranchRef: { name: 'main', target: { oid: 'abc' } },
+  };
+  const client = createEnrichmentClient(
+    {
+      token: TOKEN,
+      fetchFn: async (_, init) => {
+        query = JSON.parse(String(init?.body)).query;
+        return json({ data: { nodes: [node] } });
+      },
+      sleep: async () => {},
+      now: () => 0,
+    },
+    'facts',
+    (batch, event) => observer.push({ batch, event }),
+  );
+  const result = await client.fetchRepositories(
+    [targets[0]],
+    new AbortController().signal,
+  );
+  expect(query).toContain('defaultBranchRef { name target { oid } }');
+  expect(result[0].data).toEqual(node);
+  expect(observer).toHaveLength(1);
+});
+it('partial_default_ref_error_affects_only_its_node', async () => {
+  const client = createEnrichmentClient(
+    {
+      token: TOKEN,
+      fetchFn: async () =>
+        json({
+          data: {
+            nodes: [
+              { databaseId: 1, defaultBranchRef: null },
+              { databaseId: 2, defaultBranchRef: null },
+            ],
+          },
+          errors: [
+            {
+              path: ['nodes', 0, 'defaultBranchRef', 'target'],
+              message: 'head failed',
+            },
+          ],
+        }),
+      sleep: async () => {},
+      now: () => 0,
+    },
+    'facts',
+  );
+  expect(
+    (
+      await client.fetchRepositories(
+        targets.slice(0, 2),
+        new AbortController().signal,
+      )
+    ).map((result) => result.status),
+  ).toEqual(['failed', 'ok']);
+});
+
+it('facts_observer_binds_every_retry_to_targets', async () => {
+  const events: Array<{ batch: typeof targets; attempt: number }> = [];
+  let calls = 0;
+  const client = createEnrichmentClient(
+    {
+      token: TOKEN,
+      fetchFn: async () =>
+        ++calls === 1
+          ? json({}, 500)
+          : json({
+              data: {
+                nodes: [
+                  {
+                    databaseId: 999,
+                    defaultBranchRef: {
+                      name: 'main',
+                      target: { oid: 'wrong' },
+                    },
+                  },
+                ],
+              },
+            }),
+      sleep: async () => {},
+      now: () => 0,
+    },
+    'facts',
+    (batch, event) => events.push({ batch, attempt: event.attempt }),
+  );
+  const batch = [targets[0]];
+  const [result] = await client.fetchRepositories(
+    batch,
+    new AbortController().signal,
+  );
+  expect(events).toEqual([
+    { batch, attempt: 1 },
+    { batch, attempt: 2 },
+  ]);
+  expect(result).toMatchObject({ status: 'failed', data: null });
+});

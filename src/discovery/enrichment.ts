@@ -1,6 +1,7 @@
 import {
   createHttpClient,
   type HttpClientOptions,
+  type HttpAttemptEvent,
   isRecord,
   readJson,
   redact,
@@ -39,6 +40,11 @@ const REPOSITORY_QUERY = `query RepositoryMetadata($ids: [ID!]!) {
 /** Fetches repository metadata in GraphQL batches for candidates found only through code search. */
 export function createEnrichmentClient(
   options: HttpClientOptions,
+  queryMode: 'legacy' | 'facts' = 'legacy',
+  onAttemptFinished?: (
+    targets: EnrichmentTarget[],
+    event: HttpAttemptEvent,
+  ) => void,
 ): EnrichmentClient {
   const http = createHttpClient(options);
   return {
@@ -54,8 +60,15 @@ export function createEnrichmentClient(
           lane: 'graphql',
           minimumIntervalMs: 1_000,
           method: 'POST',
+          onAttemptFinished: (event) => onAttemptFinished?.(targets, event),
           body: JSON.stringify({
-            query: REPOSITORY_QUERY,
+            query:
+              queryMode === 'facts'
+                ? REPOSITORY_QUERY.replace(
+                    'defaultBranchRef { name }',
+                    'defaultBranchRef { name target { oid } }',
+                  )
+                : REPOSITORY_QUERY,
             variables: { ids: targets.map((target) => target.nodeId) },
           }),
         },
