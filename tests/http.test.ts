@@ -1,10 +1,11 @@
 import { expect, it, vi } from 'vitest';
+import { BudgetExhaustedError } from '../src/discovery/collectors/types.js';
 import {
   createHttpClient,
   type HttpAttemptEvent,
   type HttpRequest,
 } from '../src/discovery/http.js';
-import { BudgetExhaustedError } from '../src/discovery/collectors/types.js';
+
 const token = 'secret-token';
 const signal = new AbortController().signal;
 const request: HttpRequest = {
@@ -23,6 +24,14 @@ function setup(fetchFn: typeof fetch) {
     },
   });
 }
+it('forwards_explicit_redirect_policy_and_preserves_legacy_default', async () => {
+  const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response('ok'));
+  const client = setup(fetchFn);
+  await client.send({ ...request, redirect: 'error' }, signal);
+  expect(fetchFn.mock.calls[0]?.[1]?.redirect).toBe('error');
+  await client.send(request, signal);
+  expect(fetchFn.mock.calls[1]?.[1]?.redirect).toBeUndefined();
+});
 it('counts_retries_before_network', async () => {
   const order: string[] = [];
   const fetchFn = vi.fn(async () => {

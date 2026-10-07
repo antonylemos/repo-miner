@@ -32,6 +32,31 @@ function setup(body: unknown, link?: string, status = 200) {
   return { client, fetchFn, sleep, beforeAttempt, onAttemptFinished };
 }
 describe('activity REST client', () => {
+  it('rejects transport redirects on every activity attempt without yielding absence', async () => {
+    const s = setup([]);
+    s.fetchFn.mockImplementation(async (_url, init) => {
+      expect(init?.redirect).toBe('error');
+      throw new TypeError('fetch failed: redirect');
+    });
+    await expect(s.client.listBranches(target, 1, signal)).rejects.toThrow(
+      /redirect/,
+    );
+    expect(s.fetchFn).toHaveBeenCalledTimes(3);
+    expect(
+      s.fetchFn.mock.calls.every(
+        ([url]) =>
+          String(url) ===
+          'https://api.github.com/repos/owner/repo/branches?per_page=100&page=1',
+      ),
+    ).toBe(true);
+  });
+  it('treats an unexpected redirect response as an error', async () => {
+    const s = setup([], undefined, 302);
+    await expect(s.client.listBranches(target, 1, signal)).rejects.toThrow(
+      /302/,
+    );
+    expect(s.fetchFn).toHaveBeenCalledOnce();
+  });
   it.each(['sha', 'since', 'until', 'per_page'])(
     'rejects mutated commit pagination %s',
     async (parameter) => {

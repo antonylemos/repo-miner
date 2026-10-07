@@ -30,7 +30,13 @@ export function createActivityClient(
   const http = createHttpClient(options);
   const read = async (url: URL, signal: AbortSignal) => {
     const response = await http.send(
-      { url, lane: 'activity', minimumIntervalMs: 1000, ...hooks },
+      {
+        url,
+        lane: 'activity',
+        minimumIntervalMs: 1000,
+        ...hooks,
+        redirect: 'error',
+      },
       signal,
     );
     const payload = await readJson(response, options.token);

@@ -29,6 +29,8 @@ export type HttpRequest = {
   lane: string;
   minimumIntervalMs: number;
   method?: 'GET' | 'POST';
+  /** Omitted policies preserve fetch's default redirect behavior. */
+  redirect?: RequestRedirect;
   body?: string;
   beforeAttempt?: () => void;
   onAttemptFinished?: (event: HttpAttemptEvent) => void;
@@ -164,6 +166,7 @@ async function fetchWithTimeout(
       headers['Content-Type'] = 'application/json';
     const response = await options.fetchFn(request.url, {
       method: request.method ?? 'GET',
+      redirect: request.redirect,
       headers,
       body: request.body,
       signal: controller.signal,
