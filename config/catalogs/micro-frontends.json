@@ -136,7 +136,7 @@
       "rationale": "Dependência declarada de Module Federation, independente da terminologia (§3.1, procedimento 2).",
       "partition": {
         "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+        "bounds": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1150, 1300, 1450, 1600, 1800, 2000, 2250, 2500, 2750, 3000, 4000, 6000, 10000]
       }
     },
     {
@@ -147,7 +147,7 @@
       "rationale": "Dependência de federação de módulos para Vite (§3.1, procedimento 2).",
       "partition": {
         "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+        "bounds": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1150, 1300, 1450, 1600, 1800, 2000, 2250, 2500, 2750, 3000, 4000, 6000, 10000]
       }
     },
     {
@@ -158,7 +158,7 @@
       "rationale": "Dependência de Module Federation para Angular (§3.1, procedimento 2).",
       "partition": {
         "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+        "bounds": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1150, 1300, 1450, 1600, 1800, 2000, 2250, 2500, 2750, 3000, 4000, 6000, 10000]
       }
     },
     {
@@ -176,7 +176,7 @@
       "rationale": "Dependência declarada de single-spa (§3.1, procedimento 2).",
       "partition": {
         "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+        "bounds": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1150, 1300, 1450, 1600, 1800, 2000, 2250, 2500, 2750, 3000, 4000, 6000, 10000]
       }
     },
     {
@@ -187,7 +187,7 @@
       "rationale": "Configuração com remotes declarados: evidência de composição, não só de dependência.",
       "partition": {
         "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+        "bounds": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1150, 1300, 1450, 1600, 1800, 2000, 2250, 2500, 2750, 3000, 4000, 6000, 10000]
       }
     },
     {
@@ -198,7 +198,7 @@
       "rationale": "Configuração com remotes declarados em TypeScript.",
       "partition": {
         "by": "size",
-        "bounds": [0, 1000, 2000, 3000, 4000, 6000, 10000]
+        "bounds": [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1150, 1300, 1450, 1600, 1800, 2000, 2250, 2500, 2750, 3000, 4000, 6000, 10000]
       }
     },
     {

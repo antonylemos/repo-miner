@@ -217,14 +217,13 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
    - `…#created:2019-Q1` até `…#created:2026-Q3`, uma por trimestre;
    - `…#created:>=2026-10-01`, para o trimestre corrente.
 
-   O protocolo do estudo (`config/protocols/micro-frontends.json`) só tem a regra `recent_commit`, que não acrescenta filtro de push. O texto enviado ao GitHub para o segundo trimestre de 2025, por exemplo, é:
-   `"single-spa" in:name,description,readme created:2025-04-01..2025-06-30`
-   Com uma regra `last_push` com `since` em `2025-04-01`, o mesmo texto traria `pushed:>=2025-04-01` antes do `created:`.
+   O protocolo do estudo (`config/protocols/micro-frontends.json`) tem a regra `last_push` com `since` em `2025-04-01`, então a subconsulta de repositórios recebe `pushed:>=2025-04-01` antes do `created:`. O texto enviado ao GitHub para o segundo trimestre de 2025, por exemplo, é:
+   `"single-spa" in:name,description,readme pushed:>=2025-04-01 created:2025-04-01..2025-06-30`
 2. **Dry-run.** A linha dessa subconsulta mostra o total. O objetivo é que cada trimestre fique abaixo de 1.000; se algum saturar, o catálogo é ajustado.
 3. **Busca.** Suponha que o trimestre tenha 140 resultados: a ferramenta busca 2 páginas (100 + 40), grava cada uma com seu checkpoint e marca a subconsulta como `complete`.
 4. **Deduplicação.** Um desses resultados, um repositório fictício `exemplo/shell-app`, também aparece na consulta de código `"single-spa" filename:package.json`, no arquivo `apps/shell/package.json`. Ele continua sendo um único candidato, agora com dois hits.
-5. **Coleta de fatos.** A regra `recent-human-commit` pede o histórico de commits. Antes disso, a ferramenta obtém os metadados do repositório pelo GraphQL (branch padrão e seu commit), lista as branches e pagina os commits desde 01/04/2025, dentro dos orçamentos de `--activity-*`.
-6. **Elegibilidade.** Se algum commit desse intervalo, em qualquer branch, tem autor humano, a regra passa e o candidato fica `pass`, com as evidências registradas. Se a coleta termina completa e nenhum commit qualifica, fica `fail`. Se o orçamento acaba antes, fica `unknown`, nunca `fail`.
+5. **Coleta de fatos.** O protocolo avalia `recent-push` primeiro; só se o push passar a regra `recent-human-commit` pede o histórico de commits. Para esses candidatos, antes disso, a ferramenta obtém os metadados do repositório pelo GraphQL (branch padrão e seu commit), lista as branches e pagina os commits desde 01/04/2025, dentro dos orçamentos de `--activity-*`.
+6. **Elegibilidade.** Um candidato com push anterior a 01/04/2025 (comum entre os achados só pela busca de código) fica `fail` (`push_before_threshold`) e a avaliação para aí, sem coleta de commits. Se o push passa e algum commit desse intervalo, em qualquer branch, tem autor humano, a regra passa e o candidato fica `pass`, com as evidências registradas. Se a coleta termina completa e nenhum commit qualifica, fica `fail`. Se o orçamento acaba antes, fica `unknown`, nunca `fail`.
 7. **Exportação.** Em `candidates.csv`, ele aparece uma vez, com `strategies = technology` (as duas consultas são de tecnologia) e o resultado da regra. Em `discovery-hits.csv`, aparece duas vezes, uma por subconsulta, cada uma com seu texto exato e sua data de coleta.
 8. **Triagem.** A partir daqui, um pesquisador verifica se `exemplo/shell-app` tem de fato duas ou mais unidades de frontend compostas por single-spa, e o classifica.
 

@@ -20,6 +20,7 @@ describe('configured discovery catalog', () => {
   it('should declare approved queries separately from the human activity protocol', () => {
     expect(Object.keys(config.catalog)).toEqual(['queries']);
     expect(config.protocol.eligibility).toEqual([
+      { id: 'recent-push', type: 'last_push', since: '2025-04-01' },
       {
         id: 'recent-human-commit',
         type: 'recent_commit',
@@ -61,7 +62,11 @@ describe('configured discovery catalog', () => {
     const subqueries = prepareSearchPlan(config, '2026-10-05');
     expect(new Set(subqueries.map((s) => s.id)).size).toBe(subqueries.length);
     for (const subquery of subqueries) {
-      expect(subquery.q).not.toContain('pushed:');
+      if (subquery.endpoint === 'repositories') {
+        expect(subquery.q).toContain('pushed:>=2025-04-01');
+      } else {
+        expect(subquery.q).not.toContain('pushed:');
+      }
     }
   });
 });

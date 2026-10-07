@@ -191,7 +191,8 @@ O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-front
 
 **Decisões do estudo:**
 
-- **Protocolo de atividade** ([`config/protocols/micro-frontends.json`](config/protocols/micro-frontends.json)): exige commit de autor humano com `committedDate` desde 01/04/2025 em qualquer branch existente. O catálogo mantém as mesmas 28 consultas. O critério não data a introdução da arquitetura MFE.
+- **Protocolo de atividade** ([`config/protocols/micro-frontends.json`](config/protocols/micro-frontends.json)): exige, nesta ordem, (1) push desde 01/04/2025 (`last_push`), que filtra a busca de repositórios com `pushed:>=2025-04-01` e reprova os inativos vindos só da busca de código; e (2) commit de autor humano com `committedDate` desde a mesma data em qualquer branch existente (`recent_commit`), coletado só para quem passou no push. O catálogo mantém as mesmas 28 consultas. O critério não data a introdução da arquitetura MFE.
+- **Pré-requisitos da rodada oficial:** árvore git limpa (para que `manifest.json` registre `git.dirty: false`), Node 26.9.0 via `fnm use` (conforme `.nvmrc`) e um dry-run com `--protocol` antes da rodada, para confirmar que nenhuma partição passa de 1.000 resultados.
 - **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 8 e 13 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
 - **Termos com hífen entre aspas:** sem aspas, `single-spa` é lido como "single" e "spa" (356 mil resultados contra 6 mil com aspas).
 - **Tecnologias fixadas:** a estratégia `technology` cobre apenas Module Federation, single-spa e Web Components. Frameworks como qiankun, wujie, micro-app e Piral ficam de fora; repositórios que os usam e se descrevem como MFE ainda chegam pela terminologia.

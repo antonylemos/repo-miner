@@ -1,6 +1,11 @@
 {
   "eligibility": [
     {
+      "id": "recent-push",
+      "type": "last_push",
+      "since": "2025-04-01"
+    },
+    {
       "id": "recent-human-commit",
       "type": "recent_commit",
       "since": "2025-04-01",
