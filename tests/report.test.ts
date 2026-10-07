@@ -726,3 +726,53 @@ describe('exportRun', () => {
     }
   });
 });
+
+it('pins the exact legacy fixture CSV and manifest structure after common extraction', async () => {
+  const { directory, store, subqueries } = createTestStore(
+    catalogOf([query({ id: 'repo' })]),
+  );
+  store.savePage(
+    subqueries[0],
+    1,
+    page([hit(1)]),
+    { subqueryId: 'repo', nextPage: null, state: 'complete' },
+    'at',
+  );
+  await exportRun(store, directory);
+  expect(readFileSync(join(directory, 'candidates.csv'), 'utf8')).toBe(
+    'id,full_name,url,scope,pushed_at,pushed_at_source,pushed_at_observed_at,enrichment_status,strategies,metadata_json,enrichment_json\n1,org/repo-1,https://github.com/org/repo-1,in_scope,2025-01-01T00:00:00Z,search,at,,terminology,"{""pushed_at"":""2025-01-01T00:00:00Z""}",\n',
+  );
+  expect(readFileSync(join(directory, 'discovery-hits.csv'), 'utf8')).toBe(
+    'query_id,subquery_id,strategy,endpoint,q_effective,fetched_at,candidate_id,full_name,repository_url,path,url\nrepo,repo,terminology,repositories,repo pushed:>=2024-01-01,at,1,org/repo-1,https://github.com/org/repo-1,,https://github.com/org/repo-1\n',
+  );
+  const manifest = JSON.parse(
+    readFileSync(join(directory, 'manifest.json'), 'utf8'),
+  );
+  expect(Object.keys(manifest)).toEqual([
+    'schemaVersion',
+    'run',
+    'versions',
+    'git',
+    'sha256',
+  ]);
+  expect(manifest.run).toEqual({
+    id: store.getRun().id,
+    startedAt: '2026-10-05T00:00:00.000Z',
+    endedAt: null,
+    catalogHash: store.getRun().catalogHash,
+    pushedSince: '2024-01-01',
+    expansionDate: '2026-10-05',
+  });
+  expect(Object.keys(manifest.versions)).toEqual([
+    'node',
+    'code',
+    'lockfileVersion',
+    'lockfileSha256',
+  ]);
+  expect(Object.keys(manifest.sha256)).toEqual([
+    'candidates.csv',
+    'discovery-hits.csv',
+    'coverage.json',
+    'report.md',
+  ]);
+});

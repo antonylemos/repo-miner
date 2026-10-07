@@ -773,7 +773,7 @@ export function openProtocolStore(path: string): ProtocolStore {
           t.state === 'limited'
         )
           required[t.state]++;
-        if (t.reason)
+        if (t.state !== 'cancelled' && t.reason)
           unknownReasons[t.reason] = (unknownReasons[t.reason] ?? 0) + 1;
       }
       for (const c of candidates())
