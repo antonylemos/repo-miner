@@ -29,12 +29,22 @@ export function parseCatalog(input: unknown): Catalog {
     throw new Error('Invalid catalog: expected version 2 and a queries array');
   }
   const pushedSince = parsePushedSince(input.filters);
-  if (input.queries.length === 0) {
+  return {
+    version: 2,
+    filters: { pushedSince },
+    queries: parseQueries(input.queries),
+  };
+}
+
+export function parseQueries(input: unknown): Query[] {
+  if (!Array.isArray(input)) {
+    throw new Error('Invalid catalog: expected a queries array');
+  }
+  if (input.length === 0) {
     throw new Error('Invalid catalog: queries must not be empty');
   }
-
   const seenIds = new Set<string>();
-  const queries = input.queries.map((value, index) => {
+  return input.map((value, index) => {
     const query = parseQuery(value, index);
     if (seenIds.has(query.id)) {
       throw new Error(
@@ -44,8 +54,6 @@ export function parseCatalog(input: unknown): Catalog {
     seenIds.add(query.id);
     return query;
   });
-
-  return { version: 2, filters: { pushedSince }, queries };
 }
 
 function parsePushedSince(filters: unknown): string {
@@ -141,7 +149,7 @@ function parsePartition(
   );
 }
 
-function isIsoDate(value: unknown): value is string {
+export function isIsoDate(value: unknown): value is string {
   if (typeof value !== 'string' || !DATE_PATTERN.test(value)) return false;
   const time = Date.parse(`${value}T00:00:00Z`);
   return !Number.isNaN(time) && new Date(time).toISOString().startsWith(value);
@@ -184,7 +192,7 @@ function isInterval(value: unknown): value is Interval {
   return typeof value === 'string' && VALID_INTERVALS.has(value as Interval);
 }
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     // Array order is meaningful for queries, so only object keys are sorted.
     return `[${value.map(canonicalJson).join(',')}]`;

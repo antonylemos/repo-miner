@@ -1,3 +1,4 @@
+import { isIsoDate } from './catalog.js';
 import type { Catalog, Interval, Query, Subquery } from './types.js';
 
 type Slice = { label: string; qualifier: string };
@@ -9,11 +10,22 @@ export function expandCatalog(
   catalog: Catalog,
   expansionDate: string,
 ): Subquery[] {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(expansionDate)) {
+  return expandQueries(
+    catalog.queries,
+    expansionDate,
+    `pushed:>=${catalog.filters.pushedSince}`,
+  );
+}
+
+export function expandQueries(
+  queries: Query[],
+  expansionDate: string,
+  repositoryQualifier: string | null,
+): Subquery[] {
+  if (!isIsoDate(expansionDate)) {
     throw new Error(`Invalid expansion date "${expansionDate}"`);
   }
-  const pushFilter = `pushed:>=${catalog.filters.pushedSince}`;
-  return catalog.queries.flatMap((query) =>
+  return queries.flatMap((query) =>
     slicesFor(query, expansionDate).map(({ label, qualifier }) => ({
       id: label ? `${query.id}#${label}` : query.id,
       queryId: query.id,
@@ -21,7 +33,7 @@ export function expandCatalog(
       endpoint: query.endpoint,
       q: [
         query.q,
-        query.endpoint === 'repositories' ? pushFilter : '',
+        query.endpoint === 'repositories' ? repositoryQualifier : '',
         qualifier,
       ]
         .filter(Boolean)
