@@ -91,3 +91,62 @@ export function completeActivityFacts(
     ...overrides,
   };
 }
+
+/** Deterministic REST facts for the controlled integration pilot. */
+export function syntheticCommit(
+  seed: number,
+  options: {
+    author?: 'human' | 'bot' | 'unknown' | 'conflicting';
+    committedDate?: string;
+    sha?: string;
+    merge?: boolean;
+  } = {},
+) {
+  const author = options.author ?? 'human';
+  return {
+    sha: options.sha ?? seed.toString(16).padStart(40, '0'),
+    commit: {
+      message: options.merge ? 'Automatically merge approved change' : 'Change',
+      author: {
+        name:
+          author === 'unknown'
+            ? null
+            : author === 'human'
+              ? 'Person'
+              : 'robot[bot]',
+        email: null,
+        date: '2024-01-01T00:00:00Z',
+      },
+      committer: {
+        name: author === 'human' ? 'merge[bot]' : 'Person',
+        email: null,
+        date: options.committedDate ?? '2025-04-01T00:00:00Z',
+      },
+    },
+    author:
+      author === 'unknown'
+        ? null
+        : {
+            login: author === 'human' ? 'person' : 'robot[bot]',
+            type: author === 'bot' ? 'Bot' : 'User',
+          },
+    committer:
+      author === 'human'
+        ? { login: 'merge[bot]', type: 'Bot' }
+        : { login: 'person', type: 'User' },
+    parents: options.merge
+      ? [{ sha: 'a'.repeat(40) }, { sha: 'b'.repeat(40) }]
+      : [],
+  };
+}
+export function syntheticRepositories() {
+  return Array.from({ length: 12 }, (_, index) => {
+    const id = index + 1;
+    return {
+      id,
+      node_id: `R_${id}`,
+      full_name: `pilot/r${id}`,
+      html_url: `https://github.com/pilot/r${id}`,
+    };
+  });
+}
