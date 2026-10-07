@@ -2,9 +2,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli/main.js';
 import { openProtocolStore } from '../src/discovery/storage/protocol-store.js';
+import { openStore } from '../src/discovery/storage.js';
 import { query } from './helpers.js';
 import {
   humanActivityRule,
@@ -33,6 +35,8 @@ function fixture() {
   );
   return {
     output,
+    catalog,
+    protocol,
     args: [
       'discover',
       '--queries',
@@ -90,7 +94,9 @@ function transport(failIntermediatePage = true) {
         return json(
           id === 3
             ? [{ name: 'dependabot/other', commit: { sha: 'e'.repeat(40) } }]
-            : [],
+            : id === 12
+              ? [{ name: 'shared', commit: { sha: head(12) } }]
+              : [],
         );
       const page = Number(url.searchParams.get('page'));
       if (failIntermediatePage && id === 10 && page === 2) {
@@ -111,7 +117,11 @@ function transport(failIntermediatePage = true) {
           return json(
             url.searchParams.get('sha') === head(id)
               ? [bot(3)]
-              : [syntheticCommit(303)],
+              : url.searchParams.get('sha') === 'e'.repeat(40)
+                ? [syntheticCommit(303)]
+                : (() => {
+                    throw new Error('Unexpected other branch head');
+                  })(),
           );
         case 4:
           return json([syntheticCommit(4, { merge: true })]);
@@ -164,6 +174,79 @@ function transport(failIntermediatePage = true) {
     },
   };
 }
+
+function singleRepositoryTransport(
+  options: { pushedAt?: string; rateLimit?: boolean; interrupt?: boolean } = {},
+) {
+  const requests: URL[] = [];
+  const attemptTimes: number[] = [];
+  let activityAttempts = 0;
+  const fetch = vi
+    .spyOn(globalThis, 'fetch')
+    .mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      requests.push(url);
+      expect(url.hostname).toBe('api.github.com');
+      expect(url.pathname).not.toMatch(/\/(pulls|compare|diff)(\/|$)/);
+      if (url.pathname === '/search/repositories')
+        return json({
+          total_count: 1,
+          incomplete_results: false,
+          items: [
+            {
+              ...syntheticRepositories()[0],
+              pushed_at: options.pushedAt ?? '2025-04-01T00:00:00Z',
+            },
+          ],
+        });
+      if (url.pathname === '/graphql')
+        return json({
+          data: {
+            nodes: [
+              {
+                databaseId: 1,
+                nameWithOwner: 'pilot/r1',
+                pushedAt: options.pushedAt ?? '2025-04-01T00:00:00Z',
+                defaultBranchRef: { name: 'main', target: { oid: head(1) } },
+              },
+            ],
+          },
+        });
+      if (url.pathname !== '/repos/pilot/r1/commits')
+        throw new Error(`Unexpected endpoint ${url.pathname}`);
+      expect(init?.redirect).toBe('error');
+      activityAttempts++;
+      attemptTimes.push(Date.now());
+      if (options.rateLimit && activityAttempts === 1)
+        return new Response(
+          JSON.stringify({ message: 'rate limit exceeded' }),
+          {
+            status: 403,
+            headers: {
+              'retry-after': '2',
+              'x-ratelimit-remaining': '0',
+              'x-ratelimit-resource': 'core',
+              'x-ratelimit-used': '5000',
+            },
+          },
+        );
+      if (options.interrupt) {
+        const signal = init?.signal;
+        const pending = new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason), {
+            once: true,
+          });
+        });
+        // Send a native signal only after the CLI's listener and HTTP abort listener exist.
+        process.kill(process.pid, 'SIGINT');
+        await immediate();
+        return pending;
+      }
+      return json([syntheticCommit(1)]);
+    });
+  return { fetch, requests, attemptTimes };
+}
+
 async function run(args: string[]) {
   const running = main(args, { GITHUB_TOKEN: 'synthetic-token' });
   await vi.runAllTimersAsync();
@@ -261,6 +344,23 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect(
       store.readCandidateFacts(12).commits[0]?.author.account?.providerType,
     ).toBe('Bot');
+    expect(store.readCandidateFacts(12).commits).toHaveLength(1);
+    expect(
+      store
+        .readCandidateFacts(12)
+        .commits[0]?.refs?.map((ref) => ref.name)
+        .sort(),
+    ).toEqual(['main', 'shared']);
+    const branchThree = http.requests.filter(({ url }) =>
+      url.pathname.startsWith('/repos/pilot/r3/'),
+    );
+    expect(
+      branchThree.map(({ url }) => [url.pathname, url.searchParams.get('sha')]),
+    ).toEqual([
+      ['/repos/pilot/r3/commits', head(3)],
+      ['/repos/pilot/r3/branches', null],
+      ['/repos/pilot/r3/commits', 'e'.repeat(40)],
+    ]);
     for (const candidate of candidates.filter(
       (candidate) => candidate.evaluation?.status === 'pass',
     ))
@@ -509,5 +609,219 @@ describe('controlled protocol integration (mock transport, not live GitHub since
       expect(request.url.hostname).toBe('api.github.com');
       expect(request.url.pathname).not.toMatch(/\/(pulls|compare|diff)(\/|$)/);
     }
+  });
+  it('no protocol creates no temporal query filter or activity work and reports offline', async () => {
+    const f = fixture();
+    const http = singleRepositoryTransport();
+    const args = f.args.filter(
+      (value, index, all) =>
+        value !== '--protocol' && all[index - 1] !== '--protocol',
+    );
+    expect(await run(args)).toBe(0);
+    expect(http.requests.map((url) => url.pathname)).toEqual([
+      '/search/repositories',
+    ]);
+    expect(http.requests[0]?.searchParams.get('q')).not.toMatch(
+      /pushed:|committer-date:|author-date:/,
+    );
+    const store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe(
+      'not_applied',
+    );
+    expect(store.readTasks()).toEqual([]);
+    expect(store.readCandidateFacts(1).commits).toEqual([]);
+    store.close();
+    http.fetch.mockClear();
+    expect(await main(['report', '--run', f.output], {})).toBe(0);
+    expect(http.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['2025-04-01T00:00:00Z', 'pass'],
+    ['2025-03-31T23:59:59Z', 'fail'],
+  ])(
+    'last_push evaluates %s as %s without commit collection',
+    async (pushedAt, status) => {
+      const f = fixture();
+      writeFileSync(
+        f.protocol,
+        JSON.stringify({
+          version: 1,
+          eligibility: [{ id: 'push', type: 'last_push', since: '2025-04-01' }],
+        }),
+      );
+      const http = singleRepositoryTransport({ pushedAt });
+      expect(await run(f.args)).toBe(0);
+      expect(
+        http.requests.every((url) => !url.pathname.startsWith('/repos/')),
+      ).toBe(true);
+      const store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+      expect([...store.iterateCandidates()][0]?.evaluation).toMatchObject({
+        status,
+        rules: [{ ruleId: 'push', status }],
+      });
+      expect(store.readCandidateFacts(1).commits).toEqual([]);
+      store.close();
+      http.fetch.mockClear();
+      expect(await main(['report', '--run', f.output], {})).toBe(0);
+      expect(http.fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it('schema-v2 catalog retains legacy temporal scope, exports and resume without activity', async () => {
+    const f = fixture();
+    writeFileSync(
+      f.catalog,
+      JSON.stringify({
+        version: 2,
+        filters: { pushedSince: '2025-04-01' },
+        queries: [query({ id: 'pilot' })],
+      }),
+    );
+    const http = singleRepositoryTransport({
+      pushedAt: '2025-03-31T23:59:59Z',
+    });
+    const args = f.args.filter(
+      (value, index, all) =>
+        value !== '--protocol' && all[index - 1] !== '--protocol',
+    );
+    expect(await run(args)).toBe(0);
+    expect(http.requests[0]?.searchParams.get('q')).toContain(
+      'pushed:>=2025-04-01',
+    );
+    expect(
+      http.requests.every((url) => !url.pathname.startsWith('/repos/')),
+    ).toBe(true);
+    const store = openStore(join(f.output, 'discovery.sqlite'));
+    expect(store.getCatalog().version).toBe(2);
+    expect([...store.iterateCandidates()]).toHaveLength(1);
+    store.close();
+    const db = new DatabaseSync(join(f.output, 'discovery.sqlite'), {
+      readOnly: true,
+    });
+    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+    expect(
+      db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE name='activity_commits'",
+        )
+        .get()?.count,
+    ).toBe(0);
+    db.close();
+    const csv = readFileSync(join(f.output, 'candidates.csv'), 'utf8');
+    expect(csv).toContain('out_of_scope_temporal');
+    const outputs = [
+      'candidates.csv',
+      'discovery-hits.csv',
+      'coverage.json',
+      'manifest.json',
+      'report.md',
+    ].map((name) => readFileSync(join(f.output, name), 'utf8'));
+    http.fetch.mockClear();
+    expect(await main(['report', '--run', f.output], {})).toBe(0);
+    expect(await run(['discover', '--resume', f.output])).toBe(0);
+    expect(http.fetch).not.toHaveBeenCalled();
+    expect(
+      [
+        'candidates.csv',
+        'discovery-hits.csv',
+        'coverage.json',
+        'manifest.json',
+        'report.md',
+      ].map((name) => readFileSync(join(f.output, name), 'utf8')),
+    ).toEqual(outputs);
+  });
+
+  it('real HTTP rate-limit handling waits, retries and persists telemetry under the invocation budget', async () => {
+    const f = fixture();
+    const http = singleRepositoryTransport({ rateLimit: true });
+    expect(await run([...f.args, '--activity-max-requests', '2'])).toBe(0);
+    expect(http.attemptTimes).toHaveLength(2);
+    expect(
+      (http.attemptTimes[1] ?? 0) - (http.attemptTimes[0] ?? 0),
+    ).toBeGreaterThanOrEqual(2000);
+    const store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    expect(store.readCollectionSummary().activity).toMatchObject({
+      attempts: 2,
+      retries: 1,
+      waitMs: 2000,
+    });
+    expect(store.readCollectionSummary().perCandidate[0]?.invocationId).toBe(
+      store.getRun().invocations[0]?.id,
+    );
+    expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe('pass');
+    store.close();
+    const db = new DatabaseSync(join(f.output, 'discovery.sqlite'), {
+      readOnly: true,
+    });
+    const events = db
+      .prepare(
+        "SELECT event_json FROM collection_attempts WHERE kind='activity' ORDER BY id",
+      )
+      .all()
+      .map((row) => JSON.parse(String(row.event_json)));
+    expect(events[0]).toMatchObject({
+      status: 403,
+      rateLimitResource: 'core',
+      rateLimitUsed: 5000,
+      attempt: 1,
+    });
+    expect(events[1]).toMatchObject({ status: 200, attempt: 2, waitMs: 2000 });
+    db.close();
+  });
+
+  it('native SIGINT aborts pending HTTP, persists partial state and resumes without repeating completed search', async () => {
+    const f = fixture();
+    const listeners = process.listenerCount('SIGINT');
+    const http = singleRepositoryTransport({ interrupt: true });
+    // No fake-clock advancement while the native signal is pending.
+    expect(await main(f.args, { GITHUB_TOKEN: 'synthetic-token' })).toBe(2);
+    expect(process.listenerCount('SIGINT')).toBe(listeners);
+    let store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    expect(store.getRun().state).toBe('partial');
+    expect(store.readCollectionSummary().activity.attempts).toBe(1);
+    expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe(
+      'unknown',
+    );
+    expect(
+      store
+        .readTasks()
+        .some(
+          (task) =>
+            task.request.kind === 'commit_history' && task.state === 'pending',
+        ),
+    ).toBe(true);
+    const telemetry = new DatabaseSync(join(f.output, 'discovery.sqlite'), {
+      readOnly: true,
+    });
+    const event = JSON.parse(
+      String(
+        telemetry
+          .prepare(
+            "SELECT event_json FROM collection_attempts WHERE kind='activity'",
+          )
+          .get()?.event_json,
+      ),
+    );
+    expect(event.error).toContain('SIGINT');
+    telemetry.close();
+    const until = store.readCandidateFacts(1).inspectionUntil;
+    store.close();
+    expect(readFileSync(join(f.output, 'report.md'), 'utf8')).toContain(
+      'partial',
+    );
+    http.fetch.mockRestore();
+    const resumed = singleRepositoryTransport();
+    expect(await run(['discover', '--resume', f.output])).toBe(0);
+    expect(resumed.requests.map((url) => url.pathname)).toEqual([
+      '/repos/pilot/r1/commits',
+    ]);
+    store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    expect(store.getRun().state).toBe('complete');
+    expect(store.getRun().invocations).toHaveLength(2);
+    expect(store.readCandidateFacts(1).inspectionUntil).toBe(until);
+    expect(store.readCollectionSummary().activity.attempts).toBe(2);
+    expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe('pass');
+    store.close();
   });
 });
