@@ -1,13 +1,26 @@
-import { DEFAULT_COLLECTION_LIMITS } from '../src/discovery/collectors/types.js';
+import { DEFAULT_COLLECTION_LIMITS } from '@/modules/discovery/collection/limits.js';
 import type {
   CandidateFacts,
   CommitFact,
+} from '@/modules/discovery/model/facts.js';
+import type {
+  Query,
+  SearchHit,
+  SearchPage,
+} from '@/modules/discovery/model/search.js';
+import type {
   EligibilityRule,
   RecentCommitRule,
-} from '../src/discovery/eligibility/types.js';
-import { openStore } from '../src/discovery/storage/store.js';
-import { prepareSearchPlan } from '../src/discovery/study-config.js';
-import type { Query, SearchHit, SearchPage } from '../src/discovery/types.js';
+} from '@/modules/discovery/model/study.js';
+import { openStore } from '@/modules/discovery/storage/store.js';
+import { prepareSearchPlan } from '@/modules/discovery/study/config.js';
+
+const REPOSITORY_ROOT = new URL('../', import.meta.url);
+
+/** Resolves a path from the repository root, whatever the depth of the calling test. */
+export function projectFile(relativePath: string): URL {
+  return new URL(relativePath, REPOSITORY_ROOT);
+}
 
 export function query(overrides: Partial<Query> & Pick<Query, 'id'>): Query {
   return {

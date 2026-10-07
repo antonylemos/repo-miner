@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.15.9",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && tsc-alias",
     "typecheck": "tsc --noEmit",
     "test": "vitest run tests",
     "format": "biome format --write src tests config *.json *.ts",
@@ -16,6 +16,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@types/node": "26.6.4",
+    "tsc-alias": "^1.9.7",
     "typescript": "5.9.3",
     "vitest": "5.0.3"
   },

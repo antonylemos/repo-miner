@@ -246,25 +246,34 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 
 | Caminho | Responsabilidade |
 | --- | --- |
-| `src/cli/main.ts` | Comandos, opções, códigos de saída, dry-run, início e retomada. |
-| `src/discovery/catalog.ts` | Validação das consultas e hash canônico do catálogo. |
-| `src/discovery/study-config.ts` | Catálogo e protocolo juntos: validação e plano de busca. |
-| `src/discovery/eligibility/` | Protocolo, regras (`last_push`, `recent_commit`) e avaliação. |
-| `src/discovery/collection.ts` e `collectors/` | Coleta dos fatos que as regras pedem, com orçamentos. |
-| `src/discovery/expansion.ts` | Expansão determinística em subconsultas. |
-| `src/discovery/http.ts` | Política de rede comum: cadência, timeout, tentativas, limites de taxa e ocultação do token. |
-| `src/discovery/github.ts` | Busca REST (repositórios e código) e contagem do dry-run. |
-| `src/discovery/enrichment.ts` | Cliente GraphQL de metadados de repositório. |
-| `src/discovery/runner.ts` | Execução da busca e da coleta e estado final da rodada. |
-| `src/discovery/storage/` | Banco SQLite: esquema, gravações transacionais e leituras. |
-| `src/discovery/report.ts` e `report/` | Exportações, interseções e manifesto. |
-| `src/discovery/types.ts` | Tipos compartilhados. |
+| `src/cli/` | Ponto de entrada. `main.ts` registra os comandos e converte erros em código de saída; `options.ts` valida as flags; `runtime.ts` traz interrupção, espera e redação do token; `commands/discover.ts` (início, retomada e dry-run) e `commands/report.ts` executam cada comando. Não conhece SQL. |
+| `src/common/` | Funções puras sem domínio (`canonicalJson`, `isIsoDate`, `isRecord`), que não importam nada de `src/`. |
+| `src/modules/discovery/` | O módulo de descoberta; as linhas seguintes são suas pastas. |
+| `src/modules/discovery/study/catalog.ts` | Validação das consultas e hash canônico do catálogo. |
+| `src/modules/discovery/study/config.ts` | Catálogo e protocolo juntos: validação e plano de busca. |
+| `src/modules/discovery/eligibility/` | Protocolo, avaliação e o registro de regras (`registry.ts`). Cada regra (`last_push`, `recent_commit`) é um módulo em `rules/` que declara tipo, versão, `parse`, `evaluate` e, se restringir a busca, `searchSince`. Para criar uma regra nova: (1) um módulo em `rules/` com sua `RuleDefinition`, (2) uma linha em `registry.ts` e (3) um membro na união `EligibilityRule` em `model/study.ts`. |
+| `src/modules/discovery/collection/` | Coleta dos fatos que as regras pedem, com orçamentos. |
+| `src/modules/discovery/study/expansion.ts` | Expansão determinística em subconsultas. |
+| `src/modules/discovery/http/client.ts` | Política de rede comum: cadência, timeout, tentativas, limites de taxa e ocultação do token. |
+| `src/modules/discovery/search/github-client.ts` | Busca REST (repositórios e código) e contagem do dry-run. |
+| `src/modules/discovery/search/run-search.ts` | Execução da busca paginada por subconsulta, com checkpoints e cobertura. |
+| `src/modules/discovery/collection/enrichment-client.ts` | Cliente GraphQL de metadados de repositório. |
+| `src/modules/discovery/pipeline/run-discovery.ts` | Execução da busca e da coleta e estado final da rodada. |
+| `src/modules/discovery/storage/` | Banco SQLite: esquema, gravações transacionais e leituras. |
+| `src/modules/discovery/report/` | Exportações, interseções e manifesto. |
+| `src/modules/discovery/model/` | Contratos compartilhados: só `export type`/`interface`, importando apenas de `model/`. Qualquer camada pode importá-los sem puxar código de execução. |
 | `config/catalogs/` | Catálogos de estudos; `micro-frontends.json` é o caso de uso atual. |
-| `tests/` | Testes de cada módulo, sem acesso à rede. |
+| `tests/` | Testes sem acesso à rede. `unit/` espelha `src/`: o teste de `src/modules/discovery/study/catalog.ts` fica em `tests/unit/modules/discovery/study/catalog.test.ts`. `integration/` reúne os que atravessam módulos (CLI, pipeline com banco real, catálogo versionado em `config/` e arquitetura). `helpers.ts` e `fixtures/` ficam na raiz. |
 
-### Armazenamento (`src/discovery/storage/`)
+### Dependências e imports
 
-`store.ts` define os tipos públicos, `openStore` e `inspectStore` e compõe os módulos abaixo em um único `DiscoveryStore`. Cada módulo responde a uma pergunta:
+A direção das dependências é `cli → pipeline → (search | collection | eligibility | storage | report) → (http | study) → model`, e todos podem usar `src/common/`. `storage/` não depende de `pipeline/`, `report/` nem de `cli/`. O teste `tests/integration/architecture.test.ts` verifica essa direção, a ausência de ciclos e o espelhamento de `tests/unit/`.
+
+Um import na mesma pasta usa `./x.js`. Qualquer outro import interno usa `@/…` (a partir de `src/`) ou `@tests/…` (a partir de `tests/`), sempre com a extensão `.js`. `../` não aparece em `src/` nem em `tests/`. O alias resolve no `tsc` (`paths`), no Vitest (`resolve.alias`) e em `dist/` (`tsc-alias`, executado por `pnpm build`).
+
+### Armazenamento (`src/modules/discovery/storage/`)
+
+O contrato `DiscoveryStore` fica em `model/store.ts`. `store.ts` traz `openStore` e `inspectStore` e compõe os módulos abaixo em um único `DiscoveryStore`. Cada módulo responde a uma pergunta:
 
 | Arquivo | Conteúdo |
 |---|---|
@@ -278,6 +287,7 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | `attempts.ts` | Tentativas, orçamento por invocação e durações. |
 | `summary.ts` | Resumo e métricas da coleta. |
 | `snapshot.ts` | Leitura consistente de um instante do banco. |
+| `stored-run.ts` | Leituras somente leitura de uma rodada existente, antes de abrir o banco para escrita: configuração armazenada e tamanhos de página originais. |
 
 Convenção de espaçamento: uma linha em branco entre declarações de topo e entre os membros de objetos de API. O Biome não verifica isso, então a revisão é quem garante.
 

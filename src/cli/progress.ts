@@ -1,4 +1,4 @@
-import type { ProgressEvent } from '../discovery/runner.js';
+import type { ProgressEvent } from '@/modules/discovery/model/progress.js';
 
 const BAR_WIDTH = 24;
 /** Estimates from the first few seconds of a phase are mostly noise. */
