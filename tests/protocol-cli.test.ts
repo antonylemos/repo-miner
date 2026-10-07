@@ -267,6 +267,45 @@ describe('protocol CLI', () => {
     expect(readFileSync(path)).toEqual(malformed);
     expect(fetch).not.toHaveBeenCalled();
   });
+  it.each([
+    JSON.stringify({
+      kind: 'protocol',
+      catalog: { version: 3, queries: [] },
+      protocol: { version: 1, eligibility: [] },
+    }),
+    '{unparsable',
+  ])(
+    'rejects malformed stored report policy without changing database or outputs: %s',
+    async (configJson) => {
+      const f = fixture();
+      const fetch = mockGitHub();
+      expect(await main(f.args, env)).toBe(0);
+      fetch.mockClear();
+      const path = join(f.output, 'discovery.sqlite');
+      const db = new DatabaseSync(path);
+      db.prepare('UPDATE runs SET config_json = ?').run(configJson);
+      db.close();
+      const outputs = readdirSync(f.output).filter(
+        (name) => name !== 'discovery.sqlite',
+      );
+      expect(outputs.length).toBeGreaterThan(0);
+      for (const name of outputs)
+        writeFileSync(join(f.output, name), `sentinel:${name}`);
+      const before = readFileSync(path);
+      expect(await main(['report', '--run', f.output], {})).toBe(1);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(readFileSync(path)).toEqual(before);
+      const inspected = new DatabaseSync(path, { readOnly: true });
+      expect(inspected.prepare('PRAGMA user_version').get()?.user_version).toBe(
+        3,
+      );
+      inspected.close();
+      for (const name of outputs)
+        expect(readFileSync(join(f.output, name), 'utf8')).toBe(
+          `sentinel:${name}`,
+        );
+    },
+  );
   it('hard-crash resume attributes metadata to a fresh invocation and preserves stored policy', async () => {
     const f = fixture();
     mockGitHub();

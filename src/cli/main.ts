@@ -102,6 +102,7 @@ export async function main(
       if (!existsSync(databasePath)) {
         throw new Error('The run directory does not contain discovery.sqlite.');
       }
+      validateStoredRun(databasePath);
       const opened = openRunStore(databasePath);
       const store = opened.store;
       const progress = createProgress();
@@ -227,13 +228,19 @@ function collectionLimits(command: DiscoverOptions): CollectionLimits {
 /** Validate stored policy read-only before opening a writer or making HTTP requests. */
 function validateResume(command: DiscoverOptions): null {
   const path = join(command.resume as string, 'discovery.sqlite');
+  const version = validateStoredRun(path);
+  if (version === 2 && hasActivityOptions(command))
+    throw new Error('Activity options require a schema 3 run.');
+  return null;
+}
+
+/** Validate schema and stored protocol before opening a writable run store. */
+function validateStoredRun(path: string): number {
   const version = inspectVersion(path);
   if (version !== 2 && version !== 3)
     throw new Error(
       `Unsupported discovery database schema (version ${version})`,
     );
-  if (version === 2 && hasActivityOptions(command))
-    throw new Error('Activity options require a schema 3 run.');
   if (version === 3) {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
@@ -254,7 +261,7 @@ function validateResume(command: DiscoverOptions): null {
       db.close();
     }
   }
-  return null;
+  return version;
 }
 
 type OpenedRun = ReturnType<typeof openRunStore>;
