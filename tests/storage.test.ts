@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -680,3 +681,24 @@ describe('discovery storage', () => {
     check.close();
   });
 });
+
+it.each([77, 2, 3])(
+  'refuses an existing tableless version %i without modifying its bytes',
+  (version) => {
+    const { directory } = createTestStore(catalog);
+    const path = join(directory, `tableless-${version}.sqlite`);
+    const database = new DatabaseSync(path);
+    database.exec(`PRAGMA user_version=${version}`);
+    database.close();
+    const before = readFileSync(path);
+    expect(() => openStore(path)).toThrow(
+      /Unsupported discovery database schema/,
+    );
+    expect(readFileSync(path)).toEqual(before);
+    const check = new DatabaseSync(path, { readOnly: true });
+    expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(
+      version,
+    );
+    check.close();
+  },
+);

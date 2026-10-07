@@ -324,3 +324,80 @@ test('inspection interval cannot change through a replacement collection task', 
   ).toThrow(/upper bound/);
   expect(store.readTasks()).toHaveLength(0);
 });
+
+test('crash resume keeps interrupted reservation unknown and attributes completion to new invocation', () => {
+  const { store, path } = setup();
+  store.syncTasks(1, [request()]);
+  const task = required(store.readTasks()[0]);
+  const a = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'first');
+  store.reserveActivityAttempt(task.id, a, 20);
+  store.close();
+  const resumed = openProtocolStore(path);
+  stores.push(resumed);
+  const b = resumed.startInvocation(DEFAULT_COLLECTION_LIMITS, 'resumed');
+  resumed.reserveActivityAttempt(task.id, b, 20);
+  resumed.saveAttempt(task.id, {
+    attempt: 2,
+    startedAt: 100,
+    finishedAt: 110,
+    waitMs: 15,
+    status: 200,
+    responseBytes: 42,
+    rateLimitResource: 'core',
+    rateLimitUsed: 7,
+    error: null,
+  });
+  const summary = resumed.readCollectionSummary();
+  const first = required(summary.invocations.find((i) => i.id === a));
+  const second = required(summary.invocations.find((i) => i.id === b));
+  expect(first.activity).toMatchObject({
+    attempts: 1,
+    retries: 0,
+    responseBytes: null,
+    waitMs: 0,
+  });
+  expect(second.activity).toMatchObject({
+    attempts: 1,
+    retries: 1,
+    responseBytes: 42,
+    waitMs: 15,
+  });
+  expect(() =>
+    resumed.saveAttempt(task.id, {
+      attempt: 1,
+      startedAt: 1,
+      finishedAt: 2,
+      waitMs: 0,
+      status: 200,
+      responseBytes: 1,
+      rateLimitResource: null,
+      rateLimitUsed: null,
+      error: null,
+    }),
+  ).toThrow(/reserved/);
+});
+test.each([77, 2, 3])(
+  'tableless existing version %i cannot be initialized as protocol or existing run',
+  (version) => {
+    const { path } = setup();
+    const tableless = `${path}.tableless-${version}`;
+    const db = new DatabaseSync(tableless);
+    db.exec(`PRAGMA user_version=${version}`);
+    db.close();
+    const bytes = readFileSync(tableless);
+    for (const open of [openProtocolStore, openRunStore]) {
+      expect(() => open(tableless)).toThrow();
+      expect(readFileSync(tableless)).toEqual(bytes);
+      const check = new DatabaseSync(tableless, { readOnly: true });
+      expect(check.prepare('PRAGMA user_version').get()?.user_version).toBe(
+        version,
+      );
+      expect(
+        check
+          .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+          .all(),
+      ).toHaveLength(0);
+      check.close();
+    }
+  },
+);

@@ -33,9 +33,8 @@ export function openConnection(
         ...schema.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g),
       ].map((match) => match[1]);
       if (
-        tables.length &&
-        (v !== version ||
-          expectedTables.some((name) => !tables.some((t) => t.name === name)))
+        v !== version ||
+        expectedTables.some((name) => !tables.some((t) => t.name === name))
       )
         throw new Error(`Unsupported discovery database schema (version ${v})`);
       if (tables.length) {

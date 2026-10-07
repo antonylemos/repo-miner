@@ -218,6 +218,9 @@ export function openProtocolStore(path: string): ProtocolStore {
       };
     }
   }
+  // Only this connection's current transport attempt may complete its reservation.
+  // Interrupted reservations remain persisted with unknown telemetry after resume.
+  const ownedReservations = new Map<string, number>();
   let snapshot = false;
   const store: ProtocolStore = {
     ...search,
@@ -591,6 +594,7 @@ export function openProtocolStore(path: string): ProtocolStore {
       const task = taskFromRow(taskRow(taskId));
       if (task.request.kind !== 'commit_history')
         throw new Error('Activity reservation requires commit history');
+      let reservationId: number | undefined;
       tx(() => {
         const inv = get('SELECT * FROM invocations WHERE id=?', invocationId);
         if (!inv) throw new Error('Unknown invocation');
@@ -616,27 +620,33 @@ export function openProtocolStore(path: string): ProtocolStore {
           elapsed >= limits.maxActivityDurationMs
         )
           throw new BudgetExhaustedError('duration_budget');
-        run(
-          'INSERT INTO collection_attempts (task_id,repository_id,invocation_id,kind) VALUES (?,?,?,?)',
-          taskId,
-          task.repositoryId,
-          invocationId,
-          'activity',
+        reservationId = Number(
+          run(
+            'INSERT INTO collection_attempts (task_id,repository_id,invocation_id,kind) VALUES (?,?,?,?)',
+            taskId,
+            task.repositoryId,
+            invocationId,
+            'activity',
+          ).lastInsertRowid,
         );
       });
+      if (reservationId !== undefined)
+        ownedReservations.set(taskId, reservationId);
     },
     saveAttempt(taskId, event) {
       taskRow(taskId);
-      const reserved = get(
-        "SELECT id FROM collection_attempts WHERE task_id=? AND event_json IS NULL AND kind='activity' ORDER BY id LIMIT 1",
+      const reservationId = ownedReservations.get(taskId);
+      if (reservationId === undefined)
+        throw new Error('No reserved activity attempt owned by this execution');
+      const updated = run(
+        'UPDATE collection_attempts SET event_json=? WHERE id=? AND task_id=? AND event_json IS NULL',
+        canonicalJson(event),
+        reservationId,
         taskId,
       );
-      if (!reserved) throw new Error('No reserved activity attempt');
-      run(
-        'UPDATE collection_attempts SET event_json=? WHERE id=?',
-        canonicalJson(event),
-        Number(reserved.id),
-      );
+      if (Number(updated.changes) !== 1)
+        throw new Error('No reserved activity attempt owned by this execution');
+      ownedReservations.delete(taskId);
     },
     saveMetadataAttempt(invocationId, repositoryIds, event) {
       for (const id of repositoryIds) candidateRow(id);
