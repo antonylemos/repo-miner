@@ -1,17 +1,13 @@
 import { catalogHash } from './catalog.js';
 import { ENRICHMENT_BATCH_SIZE } from './enrichment.js';
+import { runSearch } from './search.js';
 import type { DiscoveryStore } from './storage.js';
 import type {
-  Checkpoint,
   EnrichmentClient,
   EnrichmentTarget,
   RunResult,
   SearchClient,
-  Subquery,
 } from './types.js';
-
-const MAX_PAGES = 10;
-const RESULT_CAP = 1000;
 
 export type RunDiscoveryOptions = {
   store: DiscoveryStore;
@@ -44,37 +40,16 @@ export async function runDiscovery(
     throw new Error('Catalog does not match the catalog stored for this run');
   }
 
-  const subqueries = store.getSubqueries();
   const enricher = createEnricher(store, enrichmentClient, signal, now);
-  onProgress?.({
-    phase: 'search',
-    done: 0,
-    total: subqueries.length,
-    label: '',
+  const search = runSearch({
+    store,
+    client,
+    signal,
+    now,
+    onPage: () => enricher.wake(),
+    onProgress: (done, total, label) =>
+      onProgress?.({ phase: 'search', done, total, label }),
   });
-  // Each endpoint has its own GitHub rate limit, so endpoints run concurrently
-  // while subqueries within one endpoint stay sequential to respect its pacing.
-  let done = 0;
-  const searchEndpoint = async (endpointSubqueries: Subquery[]) => {
-    for (const subquery of endpointSubqueries) {
-      if (signal.aborted) return;
-      await searchSubquery(store, client, subquery, signal, now);
-      done += 1;
-      enricher.wake();
-      onProgress?.({
-        phase: 'search',
-        done,
-        total: subqueries.length,
-        label: subquery.id,
-      });
-    }
-  };
-  const endpoints = [...new Set(subqueries.map(({ endpoint }) => endpoint))];
-  const search = Promise.all(
-    endpoints.map((endpoint) =>
-      searchEndpoint(subqueries.filter((s) => s.endpoint === endpoint)),
-    ),
-  );
   // GraphQL has its own rate limit, so full batches are enriched while search runs.
   await Promise.all([search, enricher.whileSearching(search)]);
   // Queue even after an abort so the run cannot be reported complete with unenriched candidates.
@@ -97,54 +72,6 @@ export async function runDiscovery(
   };
   store.finish(result);
   return result;
-}
-
-async function searchSubquery(
-  store: DiscoveryStore,
-  client: SearchClient,
-  subquery: Subquery,
-  signal: AbortSignal,
-  now: () => string,
-): Promise<void> {
-  let checkpoint = store.getCheckpoint(subquery.id);
-  if (checkpoint.state === 'complete' || checkpoint.state === 'partial') return;
-  const previous = store.readSubqueryCoverage(subquery.id);
-  let pageNumber = checkpoint.nextPage ?? 1;
-  let incomplete = previous.incomplete;
-  let capped = previous.capped || previous.totalReported > RESULT_CAP;
-
-  while (pageNumber <= MAX_PAGES && !signal.aborted) {
-    try {
-      const page = await client.search(subquery, pageNumber, signal);
-      incomplete ||= page.incomplete;
-      capped ||=
-        page.totalCount > RESULT_CAP ||
-        (pageNumber === MAX_PAGES && page.hasNext);
-      const exhausted = !page.hasNext || pageNumber === MAX_PAGES;
-      const isPartial = exhausted && (incomplete || capped);
-      checkpoint = {
-        subqueryId: subquery.id,
-        nextPage: exhausted ? null : pageNumber + 1,
-        state: exhausted ? (isPartial ? 'partial' : 'complete') : 'pending',
-      } satisfies Checkpoint;
-      store.savePage(subquery, pageNumber, page, checkpoint, now());
-      if (isPartial) {
-        const reasons = [
-          incomplete ? 'incomplete GitHub search results' : '',
-          capped ? 'result cap reached' : '',
-        ].filter(Boolean);
-        store.markSubquery(checkpoint, reasons.join('; '));
-      }
-      if (exhausted) return;
-      pageNumber += 1;
-    } catch (error) {
-      store.markSubquery(
-        { subqueryId: subquery.id, nextPage: pageNumber, state: 'failed' },
-        error instanceof Error ? error.message : String(error),
-      );
-      return;
-    }
-  }
 }
 
 /** Enriches queued candidates, attempting each one at most once per run so failures wait for a resume. */
