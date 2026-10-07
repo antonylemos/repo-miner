@@ -69,6 +69,7 @@ export async function collectActivityStep(
           ?.data.default_branch;
   const finish = () => {
     if (
+      request.branches === 'default' &&
       checkpoint.refsComplete &&
       !checkpoint.defaultRef &&
       checkpoint.otherRefs.length > 0
@@ -82,7 +83,8 @@ export async function collectActivityStep(
       (request.branches === 'default' ||
         checkpoint.otherRefs.every((r) => r.complete));
     if (
-      checkpoint.defaultResolved &&
+      (checkpoint.defaultResolved ||
+        (request.branches === 'all' && checkpoint.refsComplete)) &&
       historiesComplete &&
       (request.branches === 'default'
         ? checkpoint.defaultRef !== null || checkpoint.refsComplete
