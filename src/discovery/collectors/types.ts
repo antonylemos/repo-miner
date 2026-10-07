@@ -4,6 +4,45 @@ import type {
   RefObservation,
   RepositoryObservation,
 } from '../eligibility/types.js';
+import type { HttpRequest } from '../http.js';
+import type { EnrichmentTarget } from '../types.js';
+export type ActivityTarget = EnrichmentTarget & { fullName: string };
+export type ObservedPage<T> = {
+  items: T[];
+  hasNext: boolean;
+  observedAt: string;
+  requestUrl: string;
+  raw: unknown;
+};
+export type BranchResponse = {
+  ref: BranchFact;
+  observedAt: string;
+  requestUrl: string;
+  raw: unknown;
+};
+export type ActivityHooks = Pick<
+  HttpRequest,
+  'beforeAttempt' | 'onAttemptFinished'
+>;
+export type ActivityClient = {
+  readBranch(
+    target: ActivityTarget,
+    branch: string,
+    signal: AbortSignal,
+  ): Promise<BranchResponse>;
+  listBranches(
+    target: ActivityTarget,
+    page: number,
+    signal: AbortSignal,
+  ): Promise<ObservedPage<BranchFact>>;
+  listCommits(
+    target: ActivityTarget,
+    headSha: string,
+    interval: { since: string; until: string },
+    page: number,
+    signal: AbortSignal,
+  ): Promise<ObservedPage<CommitFact>>;
+};
 export type BranchFact = RefObservation;
 export type CollectionLimits = {
   branchesPerPage: number;

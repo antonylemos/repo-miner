@@ -3,6 +3,17 @@ import type {
   CommitFact,
   RecentCommitRule,
 } from '../src/discovery/eligibility/types.js';
+export function restCommitPayload() {
+  return {
+    sha: 'a'.repeat(40),
+    commit: {
+      author: { name: 'Human', email: null, date: '2025-04-01T02:00:00+02:00' },
+      committer: { name: 'Bot', email: null, date: '2025-04-01T00:00:00Z' },
+    },
+    author: { login: 'human', type: 'User' },
+    committer: { login: 'bot', type: 'Bot' },
+  };
+}
 export function humanActivityRule(
   overrides: Partial<RecentCommitRule> = {},
 ): RecentCommitRule {
