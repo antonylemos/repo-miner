@@ -13,7 +13,6 @@ import { fileURLToPath } from 'node:url';
 import type { Coverage, Query, StoredHit, Strategy } from '../types.js';
 
 export type CandidateRow = { id: number; strategies: Strategy[] };
-export const STRATEGIES: Strategy[] = ['terminology', 'technology', 'broader'];
 /** Search metadata kept in candidates.csv; API URL templates and `owner` stay only in SQLite. */
 const METADATA_FIELDS = [
   'description',
@@ -84,39 +83,50 @@ export function exportedMetadata(
   );
 }
 
-export function strategyCounts(rows: CandidateRow[]): Record<Strategy, number> {
-  return Object.fromEntries(
-    STRATEGIES.map((strategy) => [
-      strategy,
-      rows.filter((row) => row.strategies.includes(strategy)).length,
-    ]),
-  ) as Record<Strategy, number>;
+/** The run's strategies: the labels declared in its catalog, in order of first appearance. */
+export function strategyLabels(queries: Query[]): Strategy[] {
+  return [...new Set(queries.map((query) => query.strategy))];
 }
 
-export function intersections(rows: CandidateRow[]): Intersections {
-  const has = (row: CandidateRow, strategy: Strategy) =>
-    row.strategies.includes(strategy);
+export function strategyCounts(
+  rows: CandidateRow[],
+  labels: Strategy[],
+): Record<Strategy, number> {
+  return Object.fromEntries(
+    labels.map((label) => [
+      label,
+      rows.filter((row) => row.strategies.includes(label)).length,
+    ]),
+  );
+}
+
+export function intersections(
+  rows: CandidateRow[],
+  labels: Strategy[],
+): Intersections {
+  const has = (row: CandidateRow, label: Strategy) =>
+    row.strategies.includes(label);
   const exclusive = Object.fromEntries(
-    STRATEGIES.map((strategy) => [
-      strategy,
-      rows.filter((row) => row.strategies.length === 1 && has(row, strategy))
+    labels.map((label) => [
+      label,
+      rows.filter((row) => row.strategies.length === 1 && has(row, label))
         .length,
     ]),
-  ) as Record<Strategy, number>;
+  );
   const pairs: Intersections['pairs'] = [];
-  for (let left = 0; left < STRATEGIES.length; left += 1) {
-    for (let right = left + 1; right < STRATEGIES.length; right += 1) {
+  for (let left = 0; left < labels.length; left += 1) {
+    for (let right = left + 1; right < labels.length; right += 1) {
       pairs.push({
-        left: STRATEGIES[left],
-        right: STRATEGIES[right],
+        left: labels[left],
+        right: labels[right],
         count: rows.filter(
-          (row) => has(row, STRATEGIES[left]) && has(row, STRATEGIES[right]),
+          (row) => has(row, labels[left]) && has(row, labels[right]),
         ).length,
       });
     }
   }
   const all = rows.filter((row) =>
-    STRATEGIES.every((strategy) => has(row, strategy)),
+    labels.every((label) => has(row, label)),
   ).length;
   return { exclusive, pairs, all };
 }

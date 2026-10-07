@@ -1,7 +1,6 @@
-import type { Candidate, Catalog, Query } from '../types.js';
+import type { Candidate, Query } from '../types.js';
 
-export type CatalogV3 = { version: 3; queries: Query[] };
-export type AnyCatalog = Catalog | CatalogV3;
+export type Catalog = { queries: Query[] };
 export type LastPushRule = { id: string; type: 'last_push'; since: string };
 export type RecentCommitRule = {
   id: string;
@@ -12,15 +11,8 @@ export type RecentCommitRule = {
   authors: 'human' | 'any';
 };
 export type EligibilityRule = LastPushRule | RecentCommitRule;
-export type Protocol = { version: 1; eligibility: EligibilityRule[] };
-export type ProtocolStudyConfig = {
-  kind: 'protocol';
-  catalog: CatalogV3;
-  protocol: Protocol;
-};
-export type StudyConfig =
-  | { kind: 'legacy'; catalog: Catalog }
-  | ProtocolStudyConfig;
+export type Protocol = { eligibility: EligibilityRule[] };
+export type StudyConfig = { catalog: Catalog; protocol: Protocol };
 export type AccountIdentity = {
   login: string | null;
   providerType: string | null;

@@ -9,8 +9,8 @@ import {
 } from './collectors/types.js';
 import { evaluateProtocol } from './eligibility/evaluate.js';
 import type { FactRequest } from './eligibility/types.js';
-import type { ProtocolProgressEvent } from './protocol-runner.js';
-import type { ProtocolStore } from './storage/protocol-store.js';
+import type { ProgressEvent } from './runner.js';
+import type { DiscoveryStore } from './storage/store.js';
 import type { EnrichmentClient } from './types.js';
 
 export type ActivityClientFactory = (
@@ -19,7 +19,7 @@ export type ActivityClientFactory = (
 ) => ActivityClient;
 /** Bind these hooks when creating the HTTP activity client; retries each reserve an attempt. */
 export function createActivityHooks(
-  store: ProtocolStore,
+  store: DiscoveryStore,
   task: CollectionTask,
   invocationId: string,
   limits: CollectionLimits,
@@ -35,14 +35,14 @@ export function createActivityHooks(
   };
 }
 export type CollectionSchedulerOptions = {
-  store: ProtocolStore;
+  store: DiscoveryStore;
   metadataClient: EnrichmentClient;
   makeActivityClient: ActivityClientFactory;
   invocationId: string;
   limits: CollectionLimits;
   signal: AbortSignal;
   now: () => string;
-  onProgress?: (event: ProtocolProgressEvent) => void;
+  onProgress?: (event: ProgressEvent) => void;
 };
 export function createCollectionScheduler(options: CollectionSchedulerOptions) {
   const {

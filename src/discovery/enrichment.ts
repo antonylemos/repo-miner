@@ -1,7 +1,7 @@
 import {
   createHttpClient,
-  type HttpClientOptions,
   type HttpAttemptEvent,
+  type HttpClientOptions,
   isRecord,
   readJson,
   redact,
@@ -31,7 +31,7 @@ const REPOSITORY_QUERY = `query RepositoryMetadata($ids: [ID!]!) {
       primaryLanguage { name }
       stargazerCount
       repositoryTopics(first: 20) { nodes { topic { name } } }
-      defaultBranchRef { name }
+      defaultBranchRef { name target { oid } }
       description
     }
   }
@@ -40,7 +40,6 @@ const REPOSITORY_QUERY = `query RepositoryMetadata($ids: [ID!]!) {
 /** Fetches repository metadata in GraphQL batches for candidates found only through code search. */
 export function createEnrichmentClient(
   options: HttpClientOptions,
-  queryMode: 'legacy' | 'facts' = 'legacy',
   onAttemptFinished?: (
     targets: EnrichmentTarget[],
     event: HttpAttemptEvent,
@@ -62,13 +61,7 @@ export function createEnrichmentClient(
           method: 'POST',
           onAttemptFinished: (event) => onAttemptFinished?.(targets, event),
           body: JSON.stringify({
-            query:
-              queryMode === 'facts'
-                ? REPOSITORY_QUERY.replace(
-                    'defaultBranchRef { name }',
-                    'defaultBranchRef { name target { oid } }',
-                  )
-                : REPOSITORY_QUERY,
+            query: REPOSITORY_QUERY,
             variables: { ids: targets.map((target) => target.nodeId) },
           }),
         },

@@ -357,16 +357,7 @@ describe('enrichment client', () => {
   });
 });
 
-it('legacy_query_is_unchanged', async () => {
-  let query = '';
-  await makeClient(async (_, init) => {
-    query = JSON.parse(String(init?.body)).query;
-    return json({ data: { nodes: [] } });
-  }).fetchRepositories([], new AbortController().signal);
-  expect(query).toContain('defaultBranchRef { name }');
-  expect(query).not.toContain('target { oid }');
-});
-it('facts_query_returns_default_head', async () => {
+it('should request the default branch head in the query', async () => {
   let query = '';
   const observer = [] as unknown[];
   const node = {
@@ -384,7 +375,6 @@ it('facts_query_returns_default_head', async () => {
       sleep: async () => {},
       now: () => 0,
     },
-    'facts',
     (batch, event) => observer.push({ batch, event }),
   );
   const result = await client.fetchRepositories(
@@ -395,30 +385,27 @@ it('facts_query_returns_default_head', async () => {
   expect(result[0].data).toEqual(node);
   expect(observer).toHaveLength(1);
 });
-it('partial_default_ref_error_affects_only_its_node', async () => {
-  const client = createEnrichmentClient(
-    {
-      token: TOKEN,
-      fetchFn: async () =>
-        json({
-          data: {
-            nodes: [
-              { databaseId: 1, defaultBranchRef: null },
-              { databaseId: 2, defaultBranchRef: null },
-            ],
-          },
-          errors: [
-            {
-              path: ['nodes', 0, 'defaultBranchRef', 'target'],
-              message: 'head failed',
-            },
+it('should affect only its node on a partial default ref error', async () => {
+  const client = createEnrichmentClient({
+    token: TOKEN,
+    fetchFn: async () =>
+      json({
+        data: {
+          nodes: [
+            { databaseId: 1, defaultBranchRef: null },
+            { databaseId: 2, defaultBranchRef: null },
           ],
-        }),
-      sleep: async () => {},
-      now: () => 0,
-    },
-    'facts',
-  );
+        },
+        errors: [
+          {
+            path: ['nodes', 0, 'defaultBranchRef', 'target'],
+            message: 'head failed',
+          },
+        ],
+      }),
+    sleep: async () => {},
+    now: () => 0,
+  });
   expect(
     (
       await client.fetchRepositories(
@@ -429,7 +416,7 @@ it('partial_default_ref_error_affects_only_its_node', async () => {
   ).toEqual(['failed', 'ok']);
 });
 
-it('facts_observer_binds_every_retry_to_targets', async () => {
+it('should bind every retry to its targets in the observer', async () => {
   const events: Array<{ batch: typeof targets; attempt: number }> = [];
   let calls = 0;
   const client = createEnrichmentClient(
@@ -454,7 +441,6 @@ it('facts_observer_binds_every_retry_to_targets', async () => {
       sleep: async () => {},
       now: () => 0,
     },
-    'facts',
     (batch, event) => events.push({ batch, attempt: event.attempt }),
   );
   const batch = [targets[0]];

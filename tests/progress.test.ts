@@ -80,7 +80,7 @@ describe('createProgress', () => {
   });
 });
 
-it('maps search, metadata and activity progress phases', () => {
+it('should map search, metadata and activity progress phases', () => {
   const progress = {
     start: vi.fn(),
     update: vi.fn(),

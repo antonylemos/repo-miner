@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { canonicalJson } from '../src/discovery/catalog.js';
+import { canonicalJson, catalogHash } from '../src/discovery/catalog.js';
 import {
   parseStudyConfig,
   prepareSearchPlan,
@@ -14,37 +15,32 @@ const query = (overrides = {}) => ({
   ...overrides,
 });
 const catalog = {
-  version: 3,
   queries: [query(), query({ id: 'code', endpoint: 'code' })],
 };
-const protocol = (eligibility: unknown[]) => ({ version: 1, eligibility });
+const protocol = (eligibility: unknown[]) => ({ eligibility });
 const push = { id: 'push', type: 'last_push', since: '2025-04-01' };
 describe('study config', () => {
-  it('rejects_protocol_on_v2', () => {
-    const legacy = {
-      ...catalog,
-      version: 2,
-      filters: { pushedSince: '2025-04-01' },
-    };
-    expect(() => parseStudyConfig(legacy, protocol([]))).toThrow(
-      /v3|version 3/i,
-    );
+  it('should accept a catalog that only declares queries', () => {
+    expect(parseStudyConfig(catalog).catalog).toEqual(catalog);
+  });
+  it('should ignore fields of an old catalog and keep only the queries', () => {
     expect(
-      prepareSearchPlan(parseStudyConfig(legacy), '2026-10-06')[0].q,
-    ).toContain('pushed:>=2025-04-01');
-  });
-  it('rejects_filters_on_v3', () => {
-    expect(() =>
       parseStudyConfig({
-        version: 3,
-        queries: [query({ id: 'one' })],
+        ...catalog,
+        version: 2,
         filters: { pushedSince: '2025-04-01' },
-      }),
-    ).toThrow(/protocol/i);
+      }).catalog,
+    ).toEqual(catalog);
   });
-  it('omitted_protocol_equals_empty_protocol', () => {
+  it.each([null, [], 'catalog', {}, { queries: 'x' }])(
+    'should reject a catalog without a queries array: %j',
+    (input) => {
+      expect(() => parseStudyConfig(input)).toThrow(/Invalid catalog/);
+    },
+  );
+  it('should treat an omitted protocol as an empty protocol', () => {
     expect(parseStudyConfig(catalog)).toMatchObject({
-      protocol: { version: 1, eligibility: [] },
+      protocol: { eligibility: [] },
     });
     expect(parseStudyConfig(catalog)).toEqual(
       parseStudyConfig(catalog, protocol([])),
@@ -55,7 +51,7 @@ describe('study config', () => {
       ),
     ).toBe(true);
   });
-  it('does_not_generate_push_filter_for_recent_commit', () => {
+  it('should not generate push filter for recent commit', () => {
     const config = parseStudyConfig(
       catalog,
       protocol([
@@ -75,7 +71,7 @@ describe('study config', () => {
       ),
     ).toBe(true);
   });
-  it('generates_strictest_push_filter_for_conjunction', () => {
+  it('should generate strictest push filter for conjunction', () => {
     const plan = prepareSearchPlan(
       parseStudyConfig(
         catalog,
@@ -86,7 +82,15 @@ describe('study config', () => {
     expect(plan[0].q).toBe('microfrontend pushed:>=2025-06-01');
     expect(plan[1].q).toBe('microfrontend');
   });
-  it('hash_preserves_rule_and_query_order', () => {
+  it('should hash the canonical queries only', () => {
+    const parsed = parseStudyConfig(catalog).catalog;
+    expect(catalogHash(parsed)).toBe(
+      createHash('sha256')
+        .update(canonicalJson({ queries: parsed.queries }))
+        .digest('hex'),
+    );
+  });
+  it('should preserve rule and query order in the hash', () => {
     const first = parseStudyConfig(catalog);
     expect(canonicalJson(first)).not.toBe(
       canonicalJson(
@@ -97,7 +101,7 @@ describe('study config', () => {
       ),
     );
   });
-  it('shares query and date validation', () => {
+  it('should share query and date validation', () => {
     for (const queries of [
       [],
       [query(), query()],

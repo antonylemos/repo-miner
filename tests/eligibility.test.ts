@@ -8,7 +8,7 @@ import {
   commitFact,
   completeActivityFacts,
   humanActivityRule,
-} from './protocol-helpers.js';
+} from './helpers.js';
 
 describe('author classification', () => {
   it.each([
@@ -17,7 +17,7 @@ describe('author classification', () => {
     [{ login: 'person', providerType: 'Bot' }, 'bot'],
     [{ login: 'person', providerType: 'User' }, 'human'],
     [{ login: 'person', providerType: null }, 'unknown'],
-  ] as const)('classifies %j', (account, result) =>
+  ] as const)('should classify %j', (account, result) =>
     expect(classifyAuthor(account)).toBe(result),
   );
 });
@@ -27,7 +27,7 @@ describe('recent commits', () => {
     'human auto-merge',
     'human cherry-pick',
     'human rebase',
-  ])('%s counts author despite bot committer', () =>
+  ])('should count the author despite a bot committer (%s)', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule(),
@@ -38,7 +38,7 @@ describe('recent commits', () => {
       evidenceIds: [`commit:1:${'a'.repeat(40)}`],
     }),
   );
-  it('bot author and human committer is not positive', () => {
+  it('should not be positive for a bot author with a human committer', () => {
     const c = commitFact();
     c.author = c.committer;
     c.committer = commitFact().author;
@@ -52,7 +52,7 @@ describe('recent commits', () => {
       requests: [{ kind: 'commit_history' }],
     });
   });
-  it('any author accepts unknown identity', () =>
+  it('should accept an unknown identity when any author is allowed', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule({ authors: 'any' }),
@@ -64,7 +64,7 @@ describe('recent commits', () => {
       ).status,
     ).toBe('pass'));
   it.each(['2025-03-31T23:59:59Z', '2026-10-06T12:00:01Z'])(
-    'excludes outside interval %s',
+    'should exclude outside interval %s',
     (committedDate) =>
       expect(
         evaluateRecentCommit(
@@ -73,7 +73,7 @@ describe('recent commits', () => {
         ).status,
       ).toBe('fail'),
   );
-  it('unknown authors remain unknown after completion without requests', () =>
+  it('should keep unknown authors unknown after completion without requests', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule(),
@@ -90,18 +90,18 @@ describe('recent commits', () => {
         }),
       ),
     ).toMatchObject({ status: 'unknown', requests: [] }));
-  it('complete empty history fails', () =>
+  it('should fail on a complete empty history', () =>
     expect(
       evaluateRecentCommit(humanActivityRule(), completeActivityFacts()).status,
     ).toBe('fail'));
-  it('does not use unrelated complete coverage', () => {
+  it('should not use unrelated complete coverage', () => {
     const f = completeActivityFacts();
     if (!f.coverage[0]) throw new Error('Expected complete fixture coverage');
     f.coverage[0].request.branches = 'default';
     expect(evaluateRecentCommit(humanActivityRule(), f).status).toBe('unknown');
   });
   it.each(['repositoryId', 'since', 'until'] as const)(
-    'ignores mismatched coverage %s',
+    'should ignore mismatched coverage %s',
     (field) => {
       const f = completeActivityFacts();
       if (!f.coverage[0]) throw new Error('Expected complete fixture coverage');
@@ -113,14 +113,14 @@ describe('recent commits', () => {
       });
     },
   );
-  it('ignores other repository commits', () =>
+  it('should ignore other repository commits', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule(),
         completeActivityFacts({ commits: [commitFact({ repositoryId: 2 })] }),
       ).status,
     ).toBe('fail'));
-  it('accepts observed default refs', () => {
+  it('should accept observed default refs', () => {
     const ref = {
       name: 'main',
       headSha: 'a'.repeat(40),
@@ -135,7 +135,7 @@ describe('recent commits', () => {
         .status,
     ).toBe('pass');
   });
-  it('does not infer default membership without refs', () =>
+  it('should not infer default membership without refs', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule({ branches: 'default' }),
@@ -143,7 +143,7 @@ describe('recent commits', () => {
       ).status,
     ).toBe('unknown'));
   it.each(['failed', 'limited', 'pending'] as const)(
-    'never fails on %s collection',
+    'should never fail on %s collection',
     (state) => {
       const f = completeActivityFacts();
       if (!f.coverage[0]) throw new Error('Expected complete fixture coverage');
@@ -153,7 +153,7 @@ describe('recent commits', () => {
       );
     },
   );
-  it('complete bot-only history fails', () => {
+  it('should fail on a complete bot-only history', () => {
     const c = commitFact();
     c.author = c.committer;
     expect(
@@ -163,7 +163,7 @@ describe('recent commits', () => {
       ).status,
     ).toBe('fail');
   });
-  it('default branch excludes other refs', () =>
+  it('should exclude other refs for the default branch', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule({ branches: 'default' }),
@@ -192,7 +192,7 @@ describe('recent commits', () => {
         }),
       ).status,
     ).toBe('unknown'));
-  it('not started is unknown without requests', () =>
+  it('should be unknown without requests when not started', () =>
     expect(
       evaluateRecentCommit(
         humanActivityRule(),
@@ -206,11 +206,11 @@ describe('recent commits', () => {
 });
 describe('protocol and push', () => {
   const rule = { id: 'push', type: 'last_push' as const, since: '2025-04-01' };
-  it('empty protocol is not applied', () =>
+  it('should be not applied for an empty protocol', () =>
     expect(
-      evaluateProtocol({ version: 1, eligibility: [] }, candidateFacts()),
+      evaluateProtocol({ eligibility: [] }, candidateFacts()),
     ).toMatchObject({ status: 'not_applied', requests: [] }));
-  it('prefers successful GraphQL push', () =>
+  it('should prefer successful GraphQL push', () =>
     expect(
       evaluateLastPush(
         rule,
@@ -236,7 +236,7 @@ describe('protocol and push', () => {
         }),
       ),
     ).toMatchObject({ status: 'pass', evidenceIds: ['gql'] }));
-  it('chooses earliest usable REST deterministically', () => {
+  it('should choose earliest usable REST deterministically', () => {
     const observations = [
       {
         id: 'b',
@@ -265,7 +265,7 @@ describe('protocol and push', () => {
       ),
     ).toMatchObject({ status: 'fail', evidenceIds: ['a'] });
   });
-  it('unusable enrichment falls back to REST', () =>
+  it('should fall back to REST when enrichment is unusable', () =>
     expect(
       evaluateLastPush(
         rule,
@@ -291,17 +291,17 @@ describe('protocol and push', () => {
         }),
       ),
     ).toMatchObject({ status: 'pass', evidenceIds: ['good'] }));
-  it('missing push requests metadata', () =>
+  it('should request metadata when the push is missing', () =>
     expect(evaluateLastPush(rule, candidateFacts())).toMatchObject({
       status: 'unknown',
       requests: [
         { kind: 'repository_metadata', repositoryId: 1, nodeId: 'repository1' },
       ],
     }));
-  it('short circuits fail and drops requests', () =>
+  it('should short circuit on fail and drop requests', () =>
     expect(
       evaluateProtocol(
-        { version: 1, eligibility: [humanActivityRule(), rule] },
+        { eligibility: [humanActivityRule(), rule] },
         candidateFacts({
           observations: [
             {

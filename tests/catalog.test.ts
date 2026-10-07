@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { catalogHash, parseCatalog } from '../src/discovery/catalog.js';
+import { catalogHash, parseQueries } from '../src/discovery/catalog.js';
 
 const valid = {
-  version: 2,
-  filters: { pushedSince: '2024-01-01' },
   queries: [
     {
       id: 't-repositories',
@@ -32,32 +30,40 @@ const valid = {
 };
 
 function withQuery(overrides: Record<string, unknown>) {
-  return { ...valid, queries: [{ ...valid.queries[2], ...overrides }] };
+  return [{ ...valid.queries[2], ...overrides }];
 }
 
 describe('catalog', () => {
-  it('should accept a version 2 catalog with both partition kinds', () => {
-    expect(parseCatalog(valid)).toEqual(valid);
+  it('should accept queries with both partition kinds', () => {
+    expect(parseQueries(valid.queries)).toEqual(valid.queries);
   });
 
   it('should omit the partition key when a query has none', () => {
-    expect('partition' in parseCatalog(valid).queries[2]).toBe(false);
+    expect('partition' in parseQueries(valid.queries)[2]).toBe(false);
   });
 
-  it('should reject a version 1 catalog', () => {
-    expect(() => parseCatalog({ version: 1, queries: valid.queries })).toThrow(
-      /version 2/,
+  it.each(['package-manifest', 'readme_terms', 'a', 'tier2'])(
+    'should accept the free strategy label %s',
+    (strategy) => {
+      expect(parseQueries(withQuery({ strategy }))[0].strategy).toBe(strategy);
+    },
+  );
+
+  it.each([
+    '',
+    'two words',
+    'Terminology',
+    'a;b',
+    'a|b',
+    '-leading',
+    'trailing-',
+    'double--dash',
+    undefined,
+    7,
+  ])('should reject the strategy %j and cite the query id', (strategy) => {
+    expect(() => parseQueries(withQuery({ strategy }))).toThrow(
+      /"broad-repositories".*strategy/,
     );
-  });
-
-  it('should require a valid pushedSince filter', () => {
-    for (const filters of [
-      undefined,
-      {},
-      { pushedSince: '2024-13-01' },
-      { pushedSince: '2024-1-1' },
-    ])
-      expect(() => parseCatalog({ ...valid, filters })).toThrow(/pushedSince/);
   });
 
   it('should reject invalid queries', () => {
@@ -68,7 +74,7 @@ describe('catalog', () => {
       [{ ...valid.queries[2], rationale: '' }],
       [{ id: 'x', endpoint: 'repositories', q: 'x', rationale: 'x' }],
     ])
-      expect(() => parseCatalog({ ...valid, queries })).toThrow();
+      expect(() => parseQueries(queries)).toThrow();
   });
 
   it('should reject reserved qualifiers in any case or negation', () => {
@@ -78,12 +84,12 @@ describe('catalog', () => {
       'x -created:<2020-01-01',
       'size:10..20 x',
     ])
-      expect(() => parseCatalog(withQuery({ q }))).toThrow(/reserved/);
+      expect(() => parseQueries(withQuery({ q }))).toThrow(/reserved/);
   });
 
   it('should restrict partitions to their endpoint', () => {
     expect(() =>
-      parseCatalog(
+      parseQueries(
         withQuery({
           endpoint: 'code',
           partition: { by: 'created', from: '2019-01-01', interval: 'year' },
@@ -91,7 +97,7 @@ describe('catalog', () => {
       ),
     ).toThrow(/repositories/);
     expect(() =>
-      parseCatalog(withQuery({ partition: { by: 'size', bounds: [0, 10] } })),
+      parseQueries(withQuery({ partition: { by: 'size', bounds: [0, 10] } })),
     ).toThrow(/code/);
   });
 
@@ -102,33 +108,27 @@ describe('catalog', () => {
       { by: 'created', from: '2019-04-01', interval: 'year' },
       { by: 'created', from: '2019-01-01', interval: 'week' },
     ])
-      expect(() => parseCatalog(withQuery({ partition }))).toThrow();
+      expect(() => parseQueries(withQuery({ partition }))).toThrow();
   });
 
   it('should require increasing size bounds starting at zero', () => {
     for (const bounds of [[0], [1, 10], [0, 10, 10], [0, 1.5], 'x'])
       expect(() =>
-        parseCatalog(
+        parseQueries(
           withQuery({ endpoint: 'code', partition: { by: 'size', bounds } }),
         ),
       ).toThrow(/bounds/);
   });
 
   it('should hash canonical JSON while preserving query order', () => {
-    const reordered = {
-      queries: valid.queries.map((query) =>
-        Object.fromEntries(Object.entries(query).reverse()),
-      ),
-      filters: valid.filters,
-      version: 2,
-    };
-    expect(catalogHash(parseCatalog(valid))).toBe(
-      catalogHash(parseCatalog(reordered)),
+    const reordered = valid.queries.map((query) =>
+      Object.fromEntries(Object.entries(query).reverse()),
     );
-    expect(catalogHash(parseCatalog(valid))).not.toBe(
-      catalogHash(
-        parseCatalog({ ...valid, queries: [...valid.queries].reverse() }),
-      ),
+    expect(catalogHash({ queries: parseQueries(valid.queries) })).toBe(
+      catalogHash({ queries: parseQueries(reordered) }),
+    );
+    expect(catalogHash({ queries: parseQueries(valid.queries) })).not.toBe(
+      catalogHash({ queries: parseQueries([...valid.queries].reverse()) }),
     );
   });
 });

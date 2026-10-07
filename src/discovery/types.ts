@@ -1,4 +1,5 @@
-export type Strategy = 'terminology' | 'technology' | 'broader';
+/** A free label chosen by the study; see `STRATEGY_PATTERN` in catalog.ts. */
+export type Strategy = string;
 export type Endpoint = 'repositories' | 'code';
 export type Interval = 'month' | 'quarter' | 'year';
 export type Partition =
@@ -11,11 +12,6 @@ export type Query = {
   q: string;
   rationale: string;
   partition?: Partition;
-};
-export type Catalog = {
-  version: 2;
-  filters: { pushedSince: string };
-  queries: Query[];
 };
 /** One concrete GitHub search derived from a catalog query; `q` is the effective search text. */
 export type Subquery = {
@@ -50,15 +46,6 @@ export type Checkpoint = {
   nextPage: number | null;
   state: 'pending' | 'complete' | 'partial' | 'failed';
 };
-export type Run = {
-  id: string;
-  catalogHash: string;
-  pushedSince: string;
-  expansionDate: string;
-  startedAt: string;
-  endedAt: string | null;
-  state: 'running' | 'complete' | 'partial';
-};
 export type Coverage = {
   subqueryId: string;
   queryId: string;
@@ -71,29 +58,12 @@ export type Coverage = {
   state: Checkpoint['state'];
   reason: string | null;
 };
-export type EnrichmentStatus = 'pending' | 'ok' | 'not_found' | 'failed';
-export type EnrichmentSummary = {
-  counts: Record<EnrichmentStatus, number>;
-  required: { pending: number; failed: number };
-  superseded: { pending: number; failed: number };
-};
 export type EnrichmentTarget = { repositoryId: number; nodeId: string };
 export type EnrichmentResult = {
   repositoryId: number;
-  status: Exclude<EnrichmentStatus, 'pending'>;
+  status: 'ok' | 'not_found' | 'failed';
   data: Record<string, unknown> | null;
   reason: string | null;
-};
-export type Enrichment = {
-  status: EnrichmentStatus;
-  fetchedAt: string | null;
-  data: Record<string, unknown> | null;
-  reason: string | null;
-};
-export type StoredCandidate = Candidate & {
-  firstSeenAt: string;
-  metadataObservedAt: string | null;
-  enrichment: Enrichment | null;
 };
 /** A retained origin; repository metadata lives on the candidate, not on each hit. */
 export type StoredHit = Omit<SearchHit, 'candidate'> & {
@@ -105,8 +75,6 @@ export type StoredHit = Omit<SearchHit, 'candidate'> & {
   qEffective: string;
   fetchedAt: string;
 };
-export type Scope = 'in_scope' | 'out_of_scope_temporal' | 'unknown';
-export type RunResult = { run: Run; coverage: Coverage[] };
 export type SearchClient = {
   search(
     subquery: Subquery,

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import type {
-  Catalog,
   Endpoint,
   Interval,
   Partition,
@@ -8,33 +7,13 @@ import type {
   Strategy,
 } from './types.js';
 
-const VALID_STRATEGIES = new Set<Strategy>([
-  'terminology',
-  'technology',
-  'broader',
-]);
+// Lowercase words joined by single `-` or `_`, so a label is safe in `;`-separated CSV cells and Markdown tables.
+const STRATEGY_PATTERN = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 const VALID_ENDPOINTS = new Set<Endpoint>(['repositories', 'code']);
 const VALID_INTERVALS = new Set<Interval>(['month', 'quarter', 'year']);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 // The expansion generates these qualifiers, so hand-written ones would conflict.
 const RESERVED_QUALIFIER = /(?:^|\s)-?(?:pushed|created|size):/i;
-
-/** Validates untrusted JSON and returns only the fields the discovery pipeline uses. */
-export function parseCatalog(input: unknown): Catalog {
-  if (
-    !isRecord(input) ||
-    input.version !== 2 ||
-    !Array.isArray(input.queries)
-  ) {
-    throw new Error('Invalid catalog: expected version 2 and a queries array');
-  }
-  const pushedSince = parsePushedSince(input.filters);
-  return {
-    version: 2,
-    filters: { pushedSince },
-    queries: parseQueries(input.queries),
-  };
-}
 
 export function parseQueries(input: unknown): Query[] {
   if (!Array.isArray(input)) {
@@ -56,15 +35,6 @@ export function parseQueries(input: unknown): Query[] {
   });
 }
 
-function parsePushedSince(filters: unknown): string {
-  if (!isRecord(filters) || !isIsoDate(filters.pushedSince)) {
-    throw new Error(
-      'Invalid catalog: filters.pushedSince must be a YYYY-MM-DD date',
-    );
-  }
-  return filters.pushedSince;
-}
-
 function parseQuery(value: unknown, index: number): Query {
   if (!isRecord(value)) {
     throw new Error(`Invalid query at index ${index}: expected an object`);
@@ -77,7 +47,9 @@ function parseQuery(value: unknown, index: number): Query {
     );
   }
   if (!isStrategy(strategy)) {
-    throw new Error(`Invalid query "${id}": unknown strategy`);
+    throw new Error(
+      `Invalid query "${id}": strategy must be a lowercase label of letters, digits, "-" or "_"`,
+    );
   }
   if (!isEndpoint(endpoint)) {
     throw new Error(
@@ -181,7 +153,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isStrategy(value: unknown): value is Strategy {
-  return typeof value === 'string' && VALID_STRATEGIES.has(value as Strategy);
+  return typeof value === 'string' && STRATEGY_PATTERN.test(value);
 }
 
 function isEndpoint(value: unknown): value is Endpoint {
@@ -207,6 +179,8 @@ export function canonicalJson(value: unknown): string {
 }
 
 /** Fingerprints a catalog so a resumed run can detect changed search inputs. */
-export function catalogHash(catalog: Catalog): string {
-  return createHash('sha256').update(canonicalJson(catalog)).digest('hex');
+export function catalogHash(catalog: { queries: Query[] }): string {
+  return createHash('sha256')
+    .update(canonicalJson({ queries: catalog.queries }))
+    .digest('hex');
 }

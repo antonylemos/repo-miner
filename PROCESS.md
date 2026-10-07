@@ -4,7 +4,7 @@ Este guia é para quem nunca viu o projeto: pesquisadores que vão usar os dados
 
 ## Em uma frase
 
-Você descreve num catálogo **o que buscar e por quê**. O repo-miner transforma isso em buscas no GitHub, recupera todos os resultados, junta as repetições sem perder de onde cada uma veio, completa as informações que faltam, marca quem está dentro do recorte de tempo e entrega planilhas e um relatório que dizem exatamente o que foi encontrado e com que cobertura.
+Você descreve num catálogo **o que buscar e por quê**. O repo-miner transforma isso em buscas no GitHub, recupera todos os resultados, junta as repetições sem perder de onde cada uma veio e, se houver um protocolo de elegibilidade, coleta só os fatos que as regras pedem e avalia cada candidato. No fim, entrega planilhas e um relatório que dizem exatamente o que foi encontrado e com que cobertura.
 
 ```text
  pergunta de pesquisa
@@ -17,8 +17,8 @@ Você descreve num catálogo **o que buscar e por quê**. O repo-miner transform
         │ discover
         ▼
  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  ┌──────────────┐
- │  expansão em │─▶│ busca e     │─▶│ gravação e   │─▶│ enriquecimento│─▶│ recorte e    │
- │ subconsultas │  │ paginação   │  │ deduplicação │  │ (GraphQL)     │  │ exportação   │
+ │  expansão em │─▶│ busca e     │─▶│ gravação e   │─▶│ elegibilidade │─▶│ exportação   │
+ │ subconsultas │  │ paginação   │  │ deduplicação │  │ (opcional)    │  │              │
  └──────────────┘  └─────────────┘  └──────────────┘  └───────────────┘  └──────┬───────┘
                                                                                ▼
                                      candidates.csv · discovery-hits.csv · coverage.json
@@ -28,15 +28,15 @@ Você descreve num catálogo **o que buscar e por quê**. O repo-miner transform
                                        triagem humana
 ```
 
-O diagrama mostra o caminho dos dados. Na execução, as duas buscas e o enriquecimento podem se sobrepor, conforme as etapas 3 e 5.
+O diagrama mostra o caminho dos dados. Na execução, a busca e a coleta de fatos da elegibilidade podem se sobrepor, conforme as etapas 3 e 5.
 
 ## Vocabulário
 
 | Termo | O que significa aqui |
 | --- | --- |
-| **Catálogo** | Arquivo JSON com as consultas de um estudo, o recorte de tempo e a justificativa de cada consulta. |
+| **Catálogo** | Arquivo JSON com as consultas de um estudo e a justificativa de cada uma. |
 | **Consulta** | Uma busca declarada no catálogo, como `"single-spa" in:name,description,readme`. |
-| **Estratégia** | O procedimento a que a consulta pertence: `terminology` (termos que nomeiam o fenômeno), `technology` (tecnologias ou artefatos associados) ou `broader` (termos amplos ou adjacentes). |
+| **Estratégia** | Um rótulo livre, escolhido pelo estudo, para o procedimento de descoberta a que a consulta pertence (por exemplo `package-manifest`). Os relatórios contam e cruzam os rótulos presentes no catálogo. |
 | **Subconsulta** | Um pedaço de uma consulta, gerado pela ferramenta, por exemplo restrito aos repositórios criados num trimestre. É a unidade que realmente vai ao GitHub. |
 | **Partição** | A regra que divide uma consulta em subconsultas: por data de criação (repositórios) ou por tamanho de arquivo (código). |
 | **Hit** | Uma ocorrência: o repositório X apareceu na subconsulta Y, no arquivo Z. |
@@ -44,15 +44,16 @@ O diagrama mostra o caminho dos dados. Na execução, as duas buscas e o enrique
 | **Rodada** | Uma execução completa de um catálogo, gravada num diretório próprio. |
 | **Checkpoint** | A marca de até onde cada subconsulta foi buscada; permite retomar sem repetir trabalho. |
 | **Saturação** | Quando uma subconsulta tem mais de 1.000 resultados, o máximo que o GitHub entrega. |
-| **Enriquecimento** | A busca de metadados adicionais para candidatos que vieram só da busca de código. |
-| **Recorte (scope)** | A classificação de cada candidato quanto à atividade recente: `in_scope`, `out_of_scope_temporal` ou `unknown`. |
+| **Protocolo** | Arquivo opcional com regras de elegibilidade (`last_push`, `recent_commit`). Sem regras, todo candidato fica `not_applied`. |
+| **Fato** | Um dado coletado porque uma regra o pede: metadados do repositório ou o histórico de commits. |
+| **Elegibilidade** | O resultado da avaliação de um candidato: `pass`, `fail`, `unknown` ou `not_applied`. |
 | **Proveniência** | O registro de como, quando e por qual consulta um dado foi obtido. |
 
 ## A jornada passo a passo
 
 ### Etapa 0 — Da pergunta ao catálogo
 
-Tudo começa com uma pergunta de pesquisa, por exemplo "como micro-frontends aparecem em repositórios?". O catálogo traduz a pergunta em buscas, combinando as três estratégias para não depender de um único vocabulário: repositórios que **dizem** ser do tema (`terminology`), que **usam** tecnologias do tema (`technology`) e que descrevem o tema com **outras palavras** (`broader`).
+Tudo começa com uma pergunta de pesquisa, por exemplo "como micro-frontends aparecem em repositórios?". O catálogo traduz a pergunta em buscas e as agrupa em estratégias, para não depender de um único vocabulário. No estudo de micro-frontends, as estratégias escolhidas são: repositórios que **dizem** ser do tema (`terminology`), que **usam** tecnologias do tema (`technology`) e que descrevem o tema com **outras palavras** (`broader`). Esses rótulos são uma escolha do estudo; outro estudo declara os seus.
 
 Cada consulta tem uma justificativa (`rationale`) escrita por quem a criou. Isso deixa o catálogo auditável: um revisor consegue saber por que cada busca existe.
 
@@ -62,7 +63,7 @@ Algumas lições práticas, aprendidas no caso de uso de micro-frontends:
 - Tópicos (`topic:nome`) são os metadados mais precisos e costumam ter poucos resultados.
 - Para encontrar quem usa uma tecnologia, busque artefatos, como `filename:package.json` ou arquivos de configuração, em vez de prosa.
 
-Os qualificadores `pushed:`, `created:` e `size:` não podem ser escritos à mão: a ferramenta os gera a partir do recorte e da partição.
+Os qualificadores `pushed:`, `created:` e `size:` não podem ser escritos à mão: a ferramenta os gera a partir das regras `last_push` do protocolo e das partições.
 
 ### Etapa 1 — Pré-visualizar o volume (dry-run)
 
@@ -70,26 +71,26 @@ Os qualificadores `pushed:`, `created:` e `size:` não podem ser escritos à mã
 pnpm run cli discover --queries config/catalogs/micro-frontends.json --dry-run > dry-run.md
 ```
 
-O dry-run faz a expansão (etapa 2) e pergunta ao GitHub apenas **quantos** resultados cada subconsulta tem, pedindo um único item por subconsulta. Ele imprime uma tabela com a consulta, a subconsulta, o texto efetivamente enviado, o total e uma marca nas subconsultas acima de 1.000.
+O dry-run faz a expansão (etapa 2) e pergunta ao GitHub apenas **quantos** resultados cada subconsulta tem, pedindo um único item por subconsulta. Ele imprime uma tabela com a consulta, a subconsulta, o texto efetivamente enviado, o total e uma marca nas subconsultas acima de 1.000. Com `--protocol`, o texto enviado inclui o recorte `pushed:` das regras `last_push`.
 
 Nenhum arquivo é criado. Se alguma subconsulta saturar, o comando retorna `2`, e o ajuste é feito no catálogo: um intervalo menor (de trimestre para mês, por exemplo) ou mais faixas de tamanho. Repete-se o dry-run até tudo caber, ou até que a saturação restante seja uma decisão consciente e registrada.
 
 ### Etapa 2 — Iniciar a rodada e expandir o catálogo
 
 ```sh
-pnpm run cli discover --queries config/catalogs/micro-frontends.json --output data/discovery/mfe-rodada-001
+pnpm run cli discover --queries config/catalogs/micro-frontends.json --protocol config/protocols/micro-frontends.json --output data/discovery/mfe-rodada-001
 ```
 
 Ao iniciar, a ferramenta:
 
-1. **Valida o catálogo.** Identificadores únicos, estratégias e endpoints conhecidos, justificativas presentes, partições compatíveis com o endpoint. Qualquer erro interrompe tudo antes de qualquer busca.
-2. **Calcula o hash do catálogo** (SHA-256 de uma forma canônica do JSON). O hash identifica exatamente o que foi buscado e impede que uma retomada use um catálogo diferente.
-3. **Expande cada consulta em subconsultas.** Para consultas de repositórios, acrescenta `pushed:>=<data do recorte>`. Se houver partição por data de criação, gera um balde inicial (`created:<início>`), um intervalo por período e um intervalo final aberto até hoje. Se houver partição por tamanho, gera uma faixa para cada intervalo de `bounds`. A data de criação da rodada fixa o último intervalo, então a expansão é sempre a mesma para o mesmo catálogo e a mesma data.
-4. **Grava tudo em `discovery.sqlite`**: o catálogo, o hash, o recorte, a data de expansão e a lista de subconsultas, cada uma com um checkpoint "pendente".
+1. **Valida o catálogo e o protocolo.** Identificadores únicos, rótulos de estratégia válidos, endpoints conhecidos, justificativas presentes, partições compatíveis com o endpoint. Qualquer erro interrompe tudo antes de qualquer busca.
+2. **Calcula o hash do catálogo e do protocolo** (SHA-256 de uma forma canônica do JSON). Os hashes identificam exatamente o que foi buscado e avaliado e impedem que uma retomada use uma configuração diferente.
+3. **Expande cada consulta em subconsultas.** Se o protocolo tem regras `last_push`, as consultas de repositórios recebem `pushed:>=<data>`, com a data mais recente entre essas regras; as de código nunca recebem esse filtro, e sem regra `last_push` nenhuma o recebe. Se houver partição por data de criação, gera um balde inicial (`created:<início>`), um intervalo por período e um intervalo final aberto até hoje. Se houver partição por tamanho, gera uma faixa para cada intervalo de `bounds`. A data de criação da rodada fixa o último intervalo, então a expansão é sempre a mesma para o mesmo catálogo, o mesmo protocolo e a mesma data.
+4. **Grava tudo em `discovery.sqlite`**: o catálogo, o protocolo, os hashes, a data de expansão e a lista de subconsultas, cada uma com um checkpoint "pendente".
 
 ### Etapa 3 — Buscar e paginar
 
-Os endpoints de busca de repositórios e de código executam em paralelo. Dentro de cada endpoint, as subconsultas seguem a ordem do catálogo, uma de cada vez, e suas páginas também são sequenciais. Para cada subconsulta, a ferramenta pede páginas de 100 resultados ao GitHub, até no máximo 10 páginas (1.000 resultados, o limite da API). O GraphQL processa lotes completos de enriquecimento durante as buscas; os candidatos restantes são tratados ao final.
+Os endpoints de busca de repositórios e de código executam em paralelo. Dentro de cada endpoint, as subconsultas seguem a ordem do catálogo, uma de cada vez, e suas páginas também são sequenciais. Para cada subconsulta, a ferramenta pede páginas de 100 resultados ao GitHub, até no máximo 10 páginas (1.000 resultados, o limite da API). Quando o protocolo tem regras, a coleta dos fatos que elas pedem acontece durante as buscas e ao final (etapa 5).
 
 Para não ser bloqueada, ela respeita intervalos mínimos entre pedidos: 2 segundos na busca de repositórios, 6 segundos na busca de código e 1 segundo no GraphQL. Falhas de rede e erros do servidor são tentados de novo até três vezes, com espera crescente. Quando o GitHub avisa que o limite de uso foi atingido, a ferramenta espera o tempo indicado por ele (ou um minuto, se ele não indicar) antes de tentar outra vez.
 
@@ -114,64 +115,66 @@ Nessa gravação, os dados são organizados em dois níveis:
 
 Para análise e exportação, uma projeção seleciona um único hit REST de busca de repositórios, sem regravar os metadados originais do candidato. Ela prefere observações com `pushed_at` válido (string não vazia que representa uma data finita); entre observações com a mesma validade, escolhe a menor data de coleta (`fetched_at`), desempata por `subquery_id` e depois por `path`. Nome, URL e todos os metadados vêm dessa mesma observação. Sem hit REST, usa o primeiro encontro. Assim, um hit de código que chega primeiro não impede o uso posterior de metadados REST completos.
 
-`first_seen_at` continua sendo a data do primeiro encontro. A data da observação selecionada é usada em `pushed_at_observed_at` quando a fonte efetiva do push é a busca; quando é enriquecimento, usa a data de coleta do GraphQL.
+`first_seen_at` continua sendo a data do primeiro encontro. Cada observação de metadados guarda a data em que foi feita, e é ela que as regras de elegibilidade citam como evidência.
 
-### Etapa 5 — Enriquecer metadados
+### Etapa 5 — Coletar os fatos que as regras pedem
 
 A busca de repositórios já devolve a data do último push, a linguagem, o tamanho e se o repositório é fork ou está arquivado. A busca de código não devolve: ela informa só o arquivo e um resumo do repositório.
 
-Por isso, candidatos sem push de busca válido entram numa fila de enriquecimento. A ferramenta consulta a API GraphQL em lotes de até 100 repositórios: lotes completos enquanto as buscas continuam e os restantes ao final. Ela grava, à parte e sem sobrescrever os metadados da busca, a data de criação, a do último push, os indicadores de fork, arquivado, template e espelho, o tamanho, a linguagem principal, as estrelas, os tópicos, a branch padrão e a descrição.
+Sem protocolo, ou com protocolo sem regras, **nada é coletado além da busca**: todo candidato fica `not_applied`, e candidatos encontrados só pela busca de código continuam sem esses metadados.
 
-| Resultado | Significado |
+Com regras, a coleta é dirigida por elas:
+
+- `last_push` precisa do push do repositório. Se o candidato não tem um push válido vindo da busca, a ferramenta pede os metadados pela API GraphQL, em lotes de até 100 repositórios: lotes completos enquanto as buscas continuam e os restantes ao final. Os metadados coletados incluem a data do último push, a branch padrão e seu commit, e ficam à parte, sem sobrescrever os da busca.
+- `recent_commit` precisa do histórico de commits. Antes de coletá-lo, a ferramenta obtém os metadados do candidato; depois lista as branches e pagina os commits dentro dos orçamentos de `--activity-*`.
+
+Cada candidato é reavaliado a cada fato novo. Se uma regra já reprova o candidato, os fatos pedidos só pelas regras seguintes não são coletados.
+
+| Resultado de uma coleta | Significado |
 | --- | --- |
-| `ok` | Metadados obtidos. |
-| `not_found` | O repositório foi removido ou ficou privado. Situação definitiva. |
-| `failed` | Falha temporária. Será tentado de novo na retomada. |
+| `complete` | Fatos obtidos. |
+| `limited` | O orçamento de requisições ou de duração se esgotou. A regra fica `unknown`. |
+| `failed` | Falha. A tarefa é retomada com `discover --resume`. |
 
-Um campo legitimamente nulo, inclusive `pushedAt`, não é uma falha: se o nó válido não tem erro associado, permanece `ok`. Numa resposta parcial, um erro em um campo ou nó marca apenas o candidato afetado como `failed`; irmãos sem erro continuam `ok`. Erros sem caminho que identifique confiavelmente um alvo afetam o lote inteiro. `NOT_FOUND` só gera `not_found` quando o nó está ausente e o caminho aponta diretamente para ele (`nodes`, índice); `NOT_FOUND` em campo aninhado é `failed`. Um nó ausente sem prova definitiva de remoção também é `failed`. Os motivos armazenados ocultam o token.
+Um campo legitimamente nulo, inclusive `pushedAt`, não é uma falha. Numa resposta parcial do GraphQL, um erro em um campo ou nó afeta apenas o candidato associado; erros sem caminho que identifique confiavelmente um alvo afetam o lote inteiro. Os motivos armazenados ocultam o token.
 
-Se uma observação REST com push válido chegar depois de um enriquecimento `pending` ou `failed`, ele deixa de ser necessário e não é reenviado. O registro histórico e seu motivo são preservados; uma chamada GraphQL já em andamento também tem seu resultado conservado. Cada candidato necessário é tentado no máximo uma vez por invocação; falhas restantes aguardam a retomada.
+### Etapa 6 — Avaliar a elegibilidade
 
-### Etapa 6 — Aplicar o recorte temporal
+Cada candidato recebe uma avaliação por regra e uma agregada:
 
-Cada candidato recebe um `scope`, calculado no momento da exportação e nunca gravado no banco, para que uma mudança de regra não exija refazer a coleta:
+| Agregada | Quando |
+| --- | --- |
+| `fail` | Alguma regra falha. |
+| `unknown` | Nenhuma falha, e alguma regra está indeterminada (dados ausentes, coleta incompleta, orçamento esgotado ou autoria indeterminada). Nunca vira `fail` por falta de dados. |
+| `pass` | Todas as regras passam. |
+| `not_applied` | O protocolo não tem regras. |
 
-1. Se o enriquecimento está `ok` e seu push é válido, vale essa data, mesmo se foi observada antes da REST.
-2. Senão (inclusive push enriquecido nulo ou inválido), vale o push válido da observação de busca selecionada.
-3. Com uma data em mãos: `in_scope` se ela é igual ou posterior ao recorte, `out_of_scope_temporal` se é anterior.
-4. Sem data utilizável: `unknown`.
+**Regra `last_push`.** Compara o último push do repositório com a data configurada. O push dos metadados coletados tem precedência sobre o da busca. A data comparada é a do push ao GitHub, não a data dos commits: commits criados em março de 2025 e enviados em abril contam como atividade em abril, e um push em qualquer branch atualiza a data. "Até hoje" quer dizer até a coleta.
 
-A fonte da data (`enrichment` ou `search`) e o momento em que ela foi observada são exportados junto, para que qualquer pessoa possa conferir de onde veio a decisão.
+**Regra `recent_commit`.** Procura ao menos um commit com `committedDate` desde a data configurada (meia-noite UTC inclusiva) até o instante de inspeção gravado para o candidato, nas branches pedidas e, com `authors: "human"`, de autor humano. O autor do commit, e não o committer, determina a autoria.
 
-**O que conta como atividade.** A data comparada é a do **último push** ao GitHub, não a data dos commits. Com recorte em 01/04/2025, um repositório entra quando recebeu algum push entre essa data e o momento da coleta. Isso tem quatro consequências:
+Estar ativo não significa que o fenômeno estudado foi implementado recentemente, e a elegibilidade não confirma pertencimento ao fenômeno.
 
-- Commits criados em março de 2025 e enviados em abril contam como atividade em abril; um commit datado de abril que nunca foi enviado não conta.
-- Um push em qualquer branch atualiza a data, mesmo que o branch principal esteja parado.
-- "Até hoje" quer dizer até a coleta: a data é lida quando o repositório aparece na busca ou é enriquecido, e um push feito depois da rodada não muda o resultado dela.
-- Estar ativo não significa que o fenômeno estudado foi implementado recentemente. Um repositório antigo com um ajuste em 2025 entra no recorte; se o estudo exigir commits recentes no branch principal, esse é outro critério, não aplicado hoje.
-
-Candidatos fora do recorte **não são apagados**: continuam nas exportações, apenas marcados. Retirar alguém da análise é uma decisão que precisa estar visível.
+Candidatos que não passam **não são apagados**: continuam nas exportações, apenas marcados. Retirar alguém da análise é uma decisão que precisa estar visível.
 
 ### Etapa 7 — Exportar e ler os resultados
 
 Ao final, e também quando a rodada é interrompida, a ferramenta lê o banco e gera os arquivos abaixo. `report` regenera os mesmos arquivos a qualquer momento, sem token.
 
-Todas as leituras de uma exportação usam a mesma fotografia do SQLite: CSV, cobertura, catálogo, resumo de enriquecimento e estado da rodada refletem um único instante. O CSV continua sendo escrito por streaming. Durante a coleta, outra conexão pode confirmar páginas sem bloquear esse cursor; essas páginas aparecem na exportação seguinte. Uma falha de escrita encerra o cursor e libera a transação de leitura, permitindo tentar exportar novamente.
+Todas as leituras de uma exportação usam a mesma fotografia do SQLite: CSV, cobertura, catálogo, resumo da coleta e estado da rodada refletem um único instante. O CSV é escrito por streaming. Durante a coleta, outra conexão pode confirmar páginas sem bloquear esse cursor; essas páginas aparecem na exportação seguinte. Uma falha de escrita encerra o cursor e libera a transação de leitura, permitindo tentar exportar novamente.
 
 O banco em arquivo usa WAL e pode manter `discovery.sqlite-wal` e `discovery.sqlite-shm` enquanto estiver aberto. Eles são arquivos auxiliares do SQLite. Por diretório, mantenha no máximo um writer de descoberta e um exporter ativo. `report` durante a coleta é suportado; duas exportações simultâneas para os mesmos arquivos, inclusive `report` sobreposto à exportação final de `discover`, ficam fora desse limite.
 
 | Arquivo | Para que serve | Como ler |
 | --- | --- | --- |
-| `candidates.csv` | Lista de trabalho para a triagem. | Uma linha por repositório. Filtre por `scope = in_scope`. A coluna `strategies` mostra quais procedimentos o encontraram (`terminology;technology`, por exemplo). |
+| `candidates.csv` | Lista de trabalho para a triagem. | Uma linha por repositório. A coluna `strategies` mostra quais procedimentos o encontraram (`terminology;technology`, por exemplo). Com regras de elegibilidade, filtre por `eligibility_status = pass`; `eligibility_results_json` e `evidence_json` trazem o resultado de cada regra e as evidências usadas. |
 | `discovery-hits.csv` | Proveniência completa. | Uma linha por ocorrência, com consulta, subconsulta, texto exato enviado (`q_effective`), data de coleta e caminho do arquivo. Responde "por que este repositório está na lista?". |
-| `coverage.json` | Números para análise. | Totais, contagens por recorte e por estratégia, interseções e cobertura de cada consulta e subconsulta. |
+| `coverage.json` | Números para análise. | Totais, contagens e interseções por estratégia e cobertura de cada consulta e subconsulta. Com regras, também contagens por elegibilidade, motivos de `unknown` e o resumo da coleta. |
 | `report.md` | Diagnóstico para leitura humana. | Comece por "Subconsultas que exigem revisão": se houver saturadas, a cobertura daquela consulta é parcial. |
-| `manifest.json` | Reprodutibilidade. | Hash do catálogo, versões, revisão do código e se havia alterações não commitadas (`git.dirty`), além do SHA-256 de cada arquivo exportado, que mostra se algum foi alterado depois. |
+| `manifest.json` | Reprodutibilidade. | Hashes do catálogo e do protocolo, versões, revisão do código e se havia alterações não commitadas (`git.dirty`), além do SHA-256 de cada arquivo exportado, que mostra se algum foi alterado depois. |
 | `discovery.sqlite` | Fonte de verdade. | Tudo o que foi coletado; os demais arquivos derivam dele. |
 
-As interseções do relatório são calculadas só sobre candidatos `in_scope` e aparecem em três formas: exclusivas (encontrados por uma única estratégia), par a par e a interseção das três.
-
-`coverage.json.enrichment` conta os estados históricos `pending`, `ok`, `not_found` e `failed`; o CSV mantém esse histórico em `enrichment_status`. Os campos `enrichmentRequired` e `enrichmentSuperseded` contam separadamente `pending` e `failed` ainda necessários e dispensados por push REST válido. O relatório Markdown também mostra essa distinção. Assim, uma falha histórica pode continuar visível numa rodada sem pendências efetivas.
+As interseções do relatório aparecem em três formas: exclusivas (encontrados por uma única estratégia), par a par e a interseção de todas as estratégias. São calculadas sobre todos os candidatos e, quando há regras, também sobre os candidatos `pass`.
 
 Os CSV preservam acentos e escapam vírgulas, aspas e quebras de linha conforme o padrão, então abrem corretamente em planilhas e em `pandas`.
 
@@ -183,13 +186,10 @@ Uma rodada pode levar horas. Se ela for interrompida (Ctrl+C, queda de rede, lim
 pnpm run cli discover --resume data/discovery/mfe-rodada-001
 ```
 
-A retomada usa o catálogo e as subconsultas gravados na rodada, nunca um arquivo novo. Ela continua cada subconsulta `failed` ou pendente a partir da página salva e refaz apenas os enriquecimentos pendentes ou com falha ainda necessários. Numa resposta GraphQL parcial, só os candidatos afetados e ainda necessários são reenviados. Subconsultas `complete` ou `partial` não são buscadas de novo. Para mudar consultas ou refazer uma subconsulta saturada, ajuste o catálogo e crie uma rodada nova, num diretório novo.
+A retomada usa o catálogo, o protocolo e as subconsultas gravados na rodada, nunca um arquivo novo. Ela continua cada subconsulta `failed` ou pendente a partir da página salva e retoma a coleta de fatos dos checkpoints, em uma nova invocação com seus próprios orçamentos. Subconsultas `complete` ou `partial` não são buscadas de novo. Para mudar consultas ou refazer uma subconsulta saturada, ajuste o catálogo e crie uma rodada nova, num diretório novo.
 
-A rodada só é considerada completa (código `0`) quando todas as subconsultas estão `complete` e nenhum enriquecimento ainda necessário está pendente ou com falha. Registros históricos dispensados por REST não impedem a conclusão. Caso contrário, ela é parcial (código `2`), e o relatório diz o que falta.
+A rodada só é considerada completa (código `0`) quando todas as subconsultas estão `complete` e nenhum trabalho de coleta necessário está pendente, com falha ou limitado. Caso contrário, ela é parcial (código `2`), e o relatório diz o que falta.
 
-Rodadas SQLite v2 existentes continuam aceitas. Executar `report` recupera metadados a partir dos hits REST já armazenados e recalcula o recorte e o diagnóstico atual, sem rede nem token. Ele não altera o estado persistido da rodada: uma rodada antiga pode continuar com `run.state = partial` mesmo sem pendências necessárias. Só `discover --resume` recalcula e grava esse estado; se todas as buscas terminaram e a REST dispensa as falhas, isso ocorre sem novas chamadas ao GitHub.
-
-A recuperação usa apenas informações registradas. Erros GraphQL antigos que não foram armazenados são irrecuperáveis; um registro antigo `ok` com `pushedAt: null` não recebe um motivo de erro inventado nem é reenviado automaticamente. Formatos anteriores já rejeitados continuam incompatíveis e exigem uma rodada nova.
 
 ### Etapa 9 — Depois da descoberta
 
@@ -212,19 +212,20 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 }
 ```
 
-1. **Expansão.** Numa rodada iniciada em 05/10/2026, com recorte em 01/04/2025, ela vira 33 subconsultas:
+1. **Expansão.** Numa rodada iniciada em 05/10/2026, ela vira 33 subconsultas:
    - `technology-single-spa-repositories#created:<2019-01-01`, para os repositórios criados antes de 2019;
    - `…#created:2019-Q1` até `…#created:2026-Q3`, uma por trimestre;
    - `…#created:>=2026-10-01`, para o trimestre corrente.
 
-   O texto enviado ao GitHub para o segundo trimestre de 2025, por exemplo, é:
-   `"single-spa" in:name,description,readme pushed:>=2025-04-01 created:2025-04-01..2025-06-30`
-2. **Dry-run.** A linha dessa subconsulta mostra o total. A consulta inteira tinha cerca de 1.700 repositórios ativos, então cada trimestre fica bem abaixo de 1.000.
+   O protocolo do estudo (`config/protocols/micro-frontends.json`) só tem a regra `recent_commit`, que não acrescenta filtro de push. O texto enviado ao GitHub para o segundo trimestre de 2025, por exemplo, é:
+   `"single-spa" in:name,description,readme created:2025-04-01..2025-06-30`
+   Com uma regra `last_push` com `since` em `2025-04-01`, o mesmo texto traria `pushed:>=2025-04-01` antes do `created:`.
+2. **Dry-run.** A linha dessa subconsulta mostra o total. O objetivo é que cada trimestre fique abaixo de 1.000; se algum saturar, o catálogo é ajustado.
 3. **Busca.** Suponha que o trimestre tenha 140 resultados: a ferramenta busca 2 páginas (100 + 40), grava cada uma com seu checkpoint e marca a subconsulta como `complete`.
 4. **Deduplicação.** Um desses resultados, um repositório fictício `exemplo/shell-app`, também aparece na consulta de código `"single-spa" filename:package.json`, no arquivo `apps/shell/package.json`. Ele continua sendo um único candidato, agora com dois hits.
-5. **Enriquecimento.** Como ele foi encontrado primeiro pela busca de repositórios, que traz a data de push, não precisa ser enriquecido. Se tivesse aparecido só na busca de código, entraria na fila do GraphQL.
-6. **Recorte.** Com `pushed_at = 2025-05-01T00:00:00Z` e recorte `2025-04-01`, ele fica `in_scope`, com fonte `search`. Um último push em março de 2025 ficaria `out_of_scope_temporal`.
-7. **Exportação.** Em `candidates.csv`, ele aparece uma vez, com `strategies = technology` (as duas consultas são de tecnologia). Em `discovery-hits.csv`, aparece duas vezes, uma por subconsulta, cada uma com seu texto exato e sua data de coleta.
+5. **Coleta de fatos.** A regra `recent-human-commit` pede o histórico de commits. Antes disso, a ferramenta obtém os metadados do repositório pelo GraphQL (branch padrão e seu commit), lista as branches e pagina os commits desde 01/04/2025, dentro dos orçamentos de `--activity-*`.
+6. **Elegibilidade.** Se algum commit desse intervalo, em qualquer branch, tem autor humano, a regra passa e o candidato fica `pass`, com as evidências registradas. Se a coleta termina completa e nenhum commit qualifica, fica `fail`. Se o orçamento acaba antes, fica `unknown`, nunca `fail`.
+7. **Exportação.** Em `candidates.csv`, ele aparece uma vez, com `strategies = technology` (as duas consultas são de tecnologia) e o resultado da regra. Em `discovery-hits.csv`, aparece duas vezes, uma por subconsulta, cada uma com seu texto exato e sua data de coleta.
 8. **Triagem.** A partir daqui, um pesquisador verifica se `exemplo/shell-app` tem de fato duas ou mais unidades de frontend compostas por single-spa, e o classifica.
 
 ## Como os dados são tratados
@@ -234,10 +235,10 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | Resposta de cada página | `discovery.sqlite`, tabela `pages` | Guardada como recebida, com caminhos de arquivo normalizados; nunca é sobrescrita, mesmo se a página for pedida de novo. |
 | Repositório | Tabela `candidates` | Deduplicado pelo id numérico; mantém os metadados originais do primeiro encontro e sua data. A leitura para análise projeta uma única observação REST dos hits, com sua própria data de observação. |
 | Ocorrência | Tabela `hits` | Uma por subconsulta, repositório e caminho; guarda a consulta de origem e a data de coleta. |
-| Metadados extras | Tabela `enrichments` | Separados dos metadados da busca, com status, data e motivo de falha. |
-| Recorte | Calculado na exportação | Derivado das datas disponíveis; nunca gravado, para poder ser recalculado. |
+| Fatos coletados | Tabelas `repository_observations`, `activity_commits`, `activity_refs` e `collection_*` | Metadados e histórico de commits pedidos pelas regras, separados dos metadados da busca, com tarefas, tentativas e invocações. |
+| Elegibilidade | Tabela `evaluations` | Avaliação por candidato, ligada à revisão dos fatos usada; a exportação reavalia sobre a fotografia quando ela está desatualizada, sem gravar. |
 | Token do GitHub | Apenas na memória do processo | Nunca gravado; removido de qualquer mensagem de erro. |
-| Integridade | `manifest.json` | Hash do catálogo, revisão do código, estado da árvore git e SHA-256 de cada arquivo exportado. |
+| Integridade | `manifest.json` | Hash do catálogo e do protocolo, revisão do código, estado da árvore git e SHA-256 de cada arquivo exportado. |
 
 ## Para desenvolvedores
 
@@ -246,15 +247,17 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | Caminho | Responsabilidade |
 | --- | --- |
 | `src/cli/main.ts` | Comandos, opções, códigos de saída, dry-run, início e retomada. |
-| `src/discovery/catalog.ts` | Validação do catálogo e hash canônico. |
+| `src/discovery/catalog.ts` | Validação das consultas e hash canônico do catálogo. |
+| `src/discovery/study-config.ts` | Catálogo e protocolo juntos: validação e plano de busca. |
+| `src/discovery/eligibility/` | Protocolo, regras (`last_push`, `recent_commit`) e avaliação. |
+| `src/discovery/collection.ts` e `collectors/` | Coleta dos fatos que as regras pedem, com orçamentos. |
 | `src/discovery/expansion.ts` | Expansão determinística em subconsultas. |
 | `src/discovery/http.ts` | Política de rede comum: cadência, timeout, tentativas, limites de taxa e ocultação do token. |
 | `src/discovery/github.ts` | Busca REST (repositórios e código) e contagem do dry-run. |
-| `src/discovery/enrichment.ts` | Enriquecimento pela API GraphQL. |
-| `src/discovery/runner.ts` | Execução das subconsultas, enriquecimento e estado final da rodada. |
-| `src/discovery/storage.ts` | Banco SQLite: esquema, gravações transacionais e leituras. |
-| `src/discovery/scope.ts` | Data de push efetiva e classificação temporal. |
-| `src/discovery/report.ts` | Exportações, interseções e manifesto. |
+| `src/discovery/enrichment.ts` | Cliente GraphQL de metadados de repositório. |
+| `src/discovery/runner.ts` | Execução da busca e da coleta e estado final da rodada. |
+| `src/discovery/storage/` | Banco SQLite: esquema, gravações transacionais e leituras. |
+| `src/discovery/report.ts` e `report/` | Exportações, interseções e manifesto. |
 | `src/discovery/types.ts` | Tipos compartilhados. |
 | `config/catalogs/` | Catálogos de estudos; `micro-frontends.json` é o caso de uso atual. |
 | `tests/` | Testes de cada módulo, sem acesso à rede. |
@@ -284,9 +287,9 @@ pnpm run build      # compila para dist/
 
 | Código | Significado |
 | --- | --- |
-| `0` | Ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum enriquecimento ainda necessário `pending` ou `failed`. |
-| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato anterior, ou falha de requisição no dry-run. |
-| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, enriquecimento ainda necessário pendente ou com falha, interrupção) ou dry-run com subconsulta acima de 1.000 resultados. |
+| `0` | Ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
+| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, ou falha de requisição no dry-run. |
+| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados. |
 
 ## Limites de interpretação
 

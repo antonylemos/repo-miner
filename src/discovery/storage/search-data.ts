@@ -1,49 +1,39 @@
 import { posix } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import type { DiscoveryStore } from '../storage.js';
 import type {
   Checkpoint,
   Coverage,
   Endpoint,
-  EnrichmentStatus,
   SearchPage,
-  StoredCandidate,
+  StoredHit,
   Strategy,
   Subquery,
 } from '../types.js';
 
 type StoredRow = Record<string, unknown>;
-export type SearchStore = Pick<
-  DiscoveryStore,
-  | 'getSubqueries'
-  | 'getCheckpoint'
-  | 'readSubqueryCoverage'
-  | 'savePage'
-  | 'markSubquery'
-  | 'readCoverage'
->;
+export interface SearchStore {
+  /** Reads subqueries in expansion order. */
+  getSubqueries(): Subquery[];
+  /** Reads the latest committed page checkpoint for a subquery. */
+  getCheckpoint(subqueryId: string): Checkpoint;
+  /** Aggregates page and checkpoint facts for one subquery. */
+  readSubqueryCoverage(subqueryId: string): Coverage;
+  /** Saves a normalized result page and its checkpoint atomically. */
+  savePage(
+    subquery: Subquery,
+    page: number,
+    result: SearchPage,
+    checkpoint: Checkpoint,
+    fetchedAt: string,
+  ): void;
+  /** Marks a subquery state and stores a human-readable reason. */
+  markSubquery(checkpoint: Checkpoint, reason: string): void;
+  /** Aggregates page and checkpoint facts for every subquery. */
+  readCoverage(): Coverage[];
+}
 const SUBQUERY_SELECT = `
   SELECT s.subquery_id, s.query_id, q.strategy, q.endpoint, s.q_effective, s.partition_label
   FROM subqueries s JOIN queries q ON q.query_id = s.query_id`;
-
-// Select all repository fields from one observation, preserving the original first encounter.
-export const CANDIDATE_OBSERVATIONS_SELECT = `
-  SELECT c.repository_id, c.node_id,
-         COALESCE(h.full_name, c.full_name) AS full_name,
-         COALESCE(h.repository_url, c.url) AS url,
-         COALESCE(h.metadata_json, c.metadata_json) AS metadata_json,
-         COALESCE(h.fetched_at, c.first_seen_at) AS metadata_observed_at,
-         c.first_seen_at, e.status, e.fetched_at, e.data_json, e.reason
-  FROM candidates c
-  LEFT JOIN hits h ON h.rowid = (
-    SELECT observation.rowid FROM hits observation
-    JOIN queries q ON q.query_id = observation.query_id
-    WHERE observation.repository_id = c.repository_id AND q.endpoint = 'repositories'
-    ORDER BY is_usable_push(json_extract(observation.metadata_json, '$.pushed_at')) DESC,
-             observation.fetched_at, observation.subquery_id, observation.path
-    LIMIT 1
-  )
-  LEFT JOIN enrichments e ON e.repository_id = c.repository_id`;
 
 export function createSearchData(
   database: DatabaseSync,
@@ -91,45 +81,6 @@ export function createSearchData(
       reason,
     };
   };
-  function* iterateCandidates(): Generator<StoredCandidate> {
-    const rows = database
-      .prepare(`${CANDIDATE_OBSERVATIONS_SELECT} ORDER BY c.repository_id`)
-      .iterate() as Iterable<StoredRow>;
-    for (const row of rows) {
-      yield {
-        id: Number(row.repository_id),
-        nodeId: String(row.node_id),
-        fullName: String(row.full_name),
-        url: String(row.url),
-        metadata: JSON.parse(String(row.metadata_json)) as Record<
-          string,
-          unknown
-        >,
-        firstSeenAt: String(row.first_seen_at),
-        metadataObservedAt:
-          row.metadata_observed_at === null
-            ? null
-            : String(row.metadata_observed_at),
-        enrichment:
-          row.status === null
-            ? null
-            : {
-                status: row.status as EnrichmentStatus,
-                fetchedAt:
-                  row.fetched_at === null ? null : String(row.fetched_at),
-                data:
-                  row.data_json === null
-                    ? null
-                    : (JSON.parse(String(row.data_json)) as Record<
-                        string,
-                        unknown
-                      >),
-                reason: row.reason === null ? null : String(row.reason),
-              },
-      };
-    }
-  }
-
   const COVERAGE_SELECT = `
     SELECT s.subquery_id, s.query_id, c.state, c.reason
     FROM subqueries s LEFT JOIN checkpoints c ON c.subquery_id = s.subquery_id`;
@@ -280,9 +231,7 @@ export function createSearchData(
       if (!row) throw new Error(`Unknown subquery "${subqueryId}"`);
       return coverageFor(row);
     },
-    iterateCandidates,
-  } satisfies SearchStore &
-    Pick<DiscoveryStore, 'readHits' | 'iterateCandidates'>;
+  } satisfies SearchStore & { readHits(): StoredHit[] };
 }
 function toSubquery(row: StoredRow): Subquery {
   return {

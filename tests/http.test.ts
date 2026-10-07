@@ -24,7 +24,7 @@ function setup(fetchFn: typeof fetch) {
     },
   });
 }
-it('forwards_explicit_redirect_policy_and_preserves_legacy_default', async () => {
+it('should forward an explicit redirect policy and preserve the default', async () => {
   const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response('ok'));
   const client = setup(fetchFn);
   await client.send({ ...request, redirect: 'error' }, signal);
@@ -32,7 +32,7 @@ it('forwards_explicit_redirect_policy_and_preserves_legacy_default', async () =>
   await client.send(request, signal);
   expect(fetchFn.mock.calls[1]?.[1]?.redirect).toBeUndefined();
 });
-it('counts_retries_before_network', async () => {
+it('should count retries before network', async () => {
   const order: string[] = [];
   const fetchFn = vi.fn(async () => {
     order.push('fetch');
@@ -49,7 +49,7 @@ it('counts_retries_before_network', async () => {
   );
   expect(order).toEqual(['reserve', 'fetch', 'reserve', 'fetch']);
 });
-it('does_not_retry_budget_error', async () => {
+it('should not retry budget error', async () => {
   const fetchFn = vi.fn(async () => new Response('error', { status: 500 }));
   const observer = vi.fn();
   let reservations = 0;
@@ -69,7 +69,7 @@ it('does_not_retry_budget_error', async () => {
   expect(fetchFn).toHaveBeenCalledTimes(1);
   expect(observer).toHaveBeenCalledTimes(1);
 });
-it('measures_body_and_wait', async () => {
+it('should measure body and wait', async () => {
   let calls = 0;
   const events: HttpAttemptEvent[] = [];
   const response = await setup(
@@ -108,7 +108,7 @@ it('measures_body_and_wait', async () => {
     },
   ]);
 });
-it('redacts_attempt_errors', async () => {
+it('should redact attempt errors', async () => {
   const events: HttpAttemptEvent[] = [];
   await expect(
     setup(async () => {
@@ -125,7 +125,7 @@ it('redacts_attempt_errors', async () => {
     ),
   ).toBe(true);
 });
-it('does_not_expose_headers_or_token', async () => {
+it('should not expose headers or token', async () => {
   const events: HttpAttemptEvent[] = [];
   await setup(
     async () =>
@@ -145,7 +145,7 @@ it('does_not_expose_headers_or_token', async () => {
   expect(events[0]).not.toHaveProperty('headers');
 });
 
-it('reports_received_status_when_body_read_fails', async () => {
+it('should report received status when body read fails', async () => {
   const observer = vi.fn();
   await expect(
     setup(
@@ -167,7 +167,7 @@ it('reports_received_status_when_body_read_fails', async () => {
     error: 'body [REDACTED]',
   });
 });
-it('does_not_retry_observer_failure', async () => {
+it('should not retry observer failure', async () => {
   const fetchFn = vi.fn(async () => new Response('ok'));
   await expect(
     setup(fetchFn).send(

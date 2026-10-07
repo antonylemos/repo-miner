@@ -2,41 +2,40 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 export type Row = Record<string, unknown>;
-export function inspectVersion(path: string): number {
+/** Databases written by an incompatible format are refused rather than migrated. */
+export const UNSUPPORTED_DATABASE_MESSAGE =
+  'Unsupported discovery database: it was created by an incompatible format. Create a new run with discover --output.';
+/** Validates an existing database read-only; never writes to it. */
+export function inspectDatabase(path: string, schema: string): void {
   if (!existsSync(path)) throw new Error('Run database does not exist');
-  const db = new DatabaseSync(path, { readOnly: true });
+  validateExisting(path, schema);
+}
+export function openConnection(path: string, schema: string): DatabaseSync {
+  if (path !== ':memory:' && existsSync(path)) validateExisting(path, schema);
+  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
+  const db = new DatabaseSync(path);
   try {
-    db.prepare('PRAGMA integrity_check').get();
-    return Number(
-      (db.prepare('PRAGMA user_version').get() as Row).user_version,
-    );
-  } finally {
+    db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON');
+    if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
+    db.exec(schema);
+    return db;
+  } catch (error) {
     db.close();
+    throw error;
   }
 }
-export function openConnection(
-  path: string,
-  version: number,
-  schema: string,
-): DatabaseSync {
-  const existing = path !== ':memory:' && existsSync(path);
-  if (existing) {
+function validateExisting(path: string, schema: string): void {
+  {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
-      const v = Number(
-        (db.prepare('PRAGMA user_version').get() as Row).user_version,
-      );
       const tables = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
         .all() as Row[];
       const expectedTables = [
         ...schema.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g),
       ].map((match) => match[1]);
-      if (
-        v !== version ||
-        expectedTables.some((name) => !tables.some((t) => t.name === name))
-      )
-        throw new Error(`Unsupported discovery database schema (version ${v})`);
+      if (expectedTables.some((name) => !tables.some((t) => t.name === name)))
+        throw new Error(UNSUPPORTED_DATABASE_MESSAGE);
       if (tables.length) {
         const reference = new DatabaseSync(':memory:');
         try {
@@ -74,18 +73,6 @@ export function openConnection(
       db.close();
     }
   }
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-  const db = new DatabaseSync(path);
-  try {
-    db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON');
-    if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
-    db.exec(schema);
-    db.exec(`PRAGMA user_version = ${version}`);
-    return db;
-  } catch (error) {
-    db.close();
-    throw error;
-  }
 }
 export function transaction(db: DatabaseSync, work: () => void): void {
   db.exec('BEGIN IMMEDIATE');
@@ -101,7 +88,7 @@ export const SEARCH_SCHEMA = `
   CREATE TABLE IF NOT EXISTS queries (
     query_id TEXT PRIMARY KEY,
     ordinal INTEGER NOT NULL UNIQUE,
-    strategy TEXT NOT NULL CHECK (strategy IN ('terminology', 'technology', 'broader')),
+    strategy TEXT NOT NULL,
     endpoint TEXT NOT NULL CHECK (endpoint IN ('repositories', 'code')),
     q TEXT NOT NULL,
     rationale TEXT NOT NULL,
@@ -147,13 +134,6 @@ export const SEARCH_SCHEMA = `
     subquery_id TEXT PRIMARY KEY REFERENCES subqueries(subquery_id),
     next_page INTEGER CHECK (next_page IS NULL OR next_page >= 1),
     state TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'partial', 'failed')),
-    reason TEXT
-  );
-  CREATE TABLE IF NOT EXISTS enrichments (
-    repository_id INTEGER PRIMARY KEY REFERENCES candidates(repository_id),
-    status TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'not_found', 'failed')),
-    fetched_at TEXT,
-    data_json TEXT,
     reason TEXT
   );
   CREATE INDEX IF NOT EXISTS hits_repository_observation

@@ -3,14 +3,8 @@ import { canonicalJson, isIsoDate } from '../catalog.js';
 import type { EligibilityRule, Protocol } from './types.js';
 
 export function parseProtocol(input: unknown): Protocol {
-  if (
-    !isRecord(input) ||
-    input.version !== 1 ||
-    !Array.isArray(input.eligibility)
-  ) {
-    throw new Error(
-      'Invalid protocol: expected version 1 and an eligibility array',
-    );
+  if (!isRecord(input) || !Array.isArray(input.eligibility)) {
+    throw new Error('Invalid protocol: expected an eligibility array');
   }
   const ids = new Set<string>();
   const eligibility = input.eligibility.map((value, index): EligibilityRule => {
@@ -47,7 +41,7 @@ export function parseProtocol(input: unknown): Protocol {
       authors: value.authors,
     };
   });
-  return { version: 1, eligibility };
+  return { eligibility };
 }
 
 export function protocolHash(protocol: Protocol): string {
@@ -56,4 +50,9 @@ export function protocolHash(protocol: Protocol): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A run evaluates eligibility only when its protocol declares at least one rule. */
+export function hasEligibility(protocol: Protocol): boolean {
+  return protocol.eligibility.length > 0;
 }

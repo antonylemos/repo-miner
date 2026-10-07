@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { expandCatalog } from '../src/discovery/expansion.js';
-import type { Catalog, Query } from '../src/discovery/types.js';
+import { expandQueries } from '../src/discovery/expansion.js';
+import type { Query } from '../src/discovery/types.js';
 
-function catalogWith(query: Partial<Query>): Catalog {
+const PUSH_QUALIFIER = 'pushed:>=2024-01-01';
+
+function catalogWith(query: Partial<Query>): { queries: Query[] } {
   return {
-    version: 2,
-    filters: { pushedSince: '2024-01-01' },
     queries: [
       {
         id: 'q',
@@ -19,7 +19,15 @@ function catalogWith(query: Partial<Query>): Catalog {
   };
 }
 
-describe('expandCatalog', () => {
+function expandCatalog(
+  catalog: { queries: Query[] },
+  expansionDate: string,
+  qualifier: string | null = PUSH_QUALIFIER,
+) {
+  return expandQueries(catalog.queries, expansionDate, qualifier);
+}
+
+describe('expandQueries', () => {
   it('should keep an unpartitioned repository query as one subquery with the push filter', () => {
     expect(expandCatalog(catalogWith({}), '2026-10-05')).toEqual([
       {
@@ -142,7 +150,7 @@ describe('expandCatalog', () => {
   });
 
   it('should be deterministic and preserve catalog order', () => {
-    const catalog: Catalog = {
+    const catalog = {
       ...catalogWith({}),
       queries: [
         catalogWith({ id: 'b' }).queries[0],

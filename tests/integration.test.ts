@@ -5,14 +5,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { setImmediate as immediate } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { main } from '../src/cli/main.js';
-import { openProtocolStore } from '../src/discovery/storage/protocol-store.js';
-import { openStore } from '../src/discovery/storage.js';
-import { query } from './helpers.js';
+import { openStore } from '../src/discovery/storage/store.js';
 import {
   humanActivityRule,
+  query,
   syntheticCommit,
   syntheticRepositories,
-} from './protocol-helpers.js';
+} from './helpers.js';
 
 const directories: string[] = [];
 const epoch = new Date('2026-10-06T12:00:00Z');
@@ -25,13 +24,10 @@ function fixture() {
   const catalog = join(directory, 'catalog.json');
   const protocol = join(directory, 'protocol.json');
   const output = join(directory, 'run');
-  writeFileSync(
-    catalog,
-    JSON.stringify({ version: 3, queries: [query({ id: 'pilot' })] }),
-  );
+  writeFileSync(catalog, JSON.stringify({ queries: [query({ id: 'pilot' })] }));
   writeFileSync(
     protocol,
-    JSON.stringify({ version: 1, eligibility: [humanActivityRule()] }),
+    JSON.stringify({ eligibility: [humanActivityRule()] }),
   );
   return {
     output,
@@ -265,11 +261,11 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 describe('controlled protocol integration (mock transport, not live GitHub since validation)', () => {
-  it('retains 12 repository scenarios, resumes immutable page checkpoints, and exports offline', async () => {
+  it('should retain 12 repository scenarios, resumes immutable page checkpoints, and exports offline', async () => {
     const f = fixture();
     const http = transport();
     expect(await run([...f.args, '--activity-max-requests', '3'])).toBe(2);
-    let store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    let store = openStore(join(f.output, 'discovery.sqlite'));
     const candidates = [...store.iterateCandidates()];
     expect(candidates).toHaveLength(12);
     expect(candidates.map((candidate) => candidate.evaluation?.status)).toEqual(
@@ -379,7 +375,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
         '2',
       ]),
     ).toBe(0);
-    store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    store = openStore(join(f.output, 'discovery.sqlite'));
     expect(store.getRun().state).toBe('complete');
     expect(store.getRun().invocations).toHaveLength(2);
     const resumed = store.readCandidateFacts(10);
@@ -492,7 +488,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
       ]),
     ).toBe(0);
     expect(http.fetch).not.toHaveBeenCalled();
-    store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    store = openStore(join(f.output, 'discovery.sqlite'));
     expect(
       [...store.iterateCandidates()].map((candidate) =>
         store.readCandidateFacts(candidate.id),
@@ -500,13 +496,13 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     ).toEqual(finalFacts);
     store.close();
   });
-  it('enforces actual invocation ceilings and matches uninterrupted data and evaluations after resume', async () => {
+  it('should enforce actual invocation ceilings and matches uninterrupted data and evaluations after resume', async () => {
     const limited = fixture();
     const http = transport(false);
     expect(await run([...limited.args, '--activity-max-requests', '1'])).toBe(
       2,
     );
-    let store = openProtocolStore(join(limited.output, 'discovery.sqlite'));
+    let store = openStore(join(limited.output, 'discovery.sqlite'));
     expect(
       store
         .readCollectionSummary()
@@ -531,7 +527,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
         '3',
       ]),
     ).toBe(0);
-    store = openProtocolStore(join(limited.output, 'discovery.sqlite'));
+    store = openStore(join(limited.output, 'discovery.sqlite'));
     const summary = store.readCollectionSummary();
     expect(
       summary.invocations.map(
@@ -551,7 +547,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect(store.readCandidateFacts(5).inspectionUntil).toBe(inspectionUntil);
     // Collection timestamps/revisions reflect execution timing; domain facts and evidence must agree.
     const semanticSnapshot = (output: string) => {
-      const snapshot = openProtocolStore(join(output, 'discovery.sqlite'));
+      const snapshot = openStore(join(output, 'discovery.sqlite'));
       const db = new DatabaseSync(join(output, 'discovery.sqlite'), {
         readOnly: true,
       });
@@ -610,7 +606,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
       expect(request.url.pathname).not.toMatch(/\/(pulls|compare|diff)(\/|$)/);
     }
   });
-  it('no protocol creates no temporal query filter or activity work and reports offline', async () => {
+  it('should create no temporal filter or activity work and report offline without a protocol', async () => {
     const f = fixture();
     const http = singleRepositoryTransport();
     const args = f.args.filter(
@@ -624,7 +620,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect(http.requests[0]?.searchParams.get('q')).not.toMatch(
       /pushed:|committer-date:|author-date:/,
     );
-    const store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    const store = openStore(join(f.output, 'discovery.sqlite'));
     expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe(
       'not_applied',
     );
@@ -636,17 +632,177 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect(http.fetch).not.toHaveBeenCalled();
   });
 
+  it('should never reach metadata or activity for a run without a protocol over both endpoints', async () => {
+    const f = fixture();
+    writeFileSync(
+      f.catalog,
+      JSON.stringify({
+        queries: [
+          query({ id: 'repos', q: 'term' }),
+          query({
+            id: 'code',
+            endpoint: 'code',
+            strategy: 'technology',
+            q: 'term filename:package.json',
+          }),
+        ],
+      }),
+    );
+    const requests: URL[] = [];
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input) => {
+        const url = new URL(String(input));
+        requests.push(url);
+        if (url.pathname === '/search/repositories')
+          return json({
+            total_count: 1,
+            incomplete_results: false,
+            items: [syntheticRepositories()[0]],
+          });
+        if (url.pathname === '/search/code')
+          return json({
+            total_count: 1,
+            incomplete_results: false,
+            items: [
+              {
+                path: 'package.json',
+                html_url: 'https://github.com/pilot/r2/blob/main/package.json',
+                repository: {
+                  ...syntheticRepositories()[1],
+                },
+              },
+            ],
+          });
+        throw new Error(`Unexpected endpoint ${url.pathname}`);
+      });
+    const args = f.args.filter(
+      (value, index, all) =>
+        value !== '--protocol' && all[index - 1] !== '--protocol',
+    );
+    expect(await run(args)).toBe(0);
+    expect(requests.map((url) => url.pathname).sort()).toEqual([
+      '/search/code',
+      '/search/repositories',
+    ]);
+    const store = openStore(join(f.output, 'discovery.sqlite'));
+    const candidates = [...store.iterateCandidates()];
+    expect(candidates.map(({ id }) => id)).toEqual([1, 2]);
+    expect(
+      candidates.every(
+        ({ evaluation }) => evaluation?.status === 'not_applied',
+      ),
+    ).toBe(true);
+    expect(store.getRun().state).toBe('complete');
+    expect(store.readTasks()).toEqual([]);
+    expect(store.readCollectionSummary().metadata.attempts).toBe(0);
+    expect(store.readCollectionSummary().activity.attempts).toBe(0);
+    store.close();
+    fetch.mockClear();
+    expect(await main(['report', '--run', f.output], {})).toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
+    const header = readFileSync(join(f.output, 'candidates.csv'), 'utf8').split(
+      '\n',
+    )[0];
+    expect(header).toBe('id,full_name,url,strategies,metadata_json');
+  });
+
+  it('should narrow only repository searches with last_push and collect metadata for code-only candidates', async () => {
+    const f = fixture();
+    writeFileSync(
+      f.catalog,
+      JSON.stringify({
+        queries: [
+          query({ id: 'repos', q: 'term' }),
+          query({
+            id: 'code',
+            endpoint: 'code',
+            strategy: 'technology',
+            q: 'term filename:package.json',
+          }),
+        ],
+      }),
+    );
+    writeFileSync(
+      f.protocol,
+      JSON.stringify({
+        eligibility: [{ id: 'push', type: 'last_push', since: '2025-04-01' }],
+      }),
+    );
+    const searches: Array<{ path: string; q: string | null }> = [];
+    const graphql: string[][] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.pathname.startsWith('/search/'))
+        searches.push({ path: url.pathname, q: url.searchParams.get('q') });
+      if (url.pathname === '/search/repositories')
+        return json({
+          total_count: 1,
+          incomplete_results: false,
+          items: [
+            {
+              ...syntheticRepositories()[0],
+              pushed_at: '2025-05-01T00:00:00Z',
+            },
+          ],
+        });
+      if (url.pathname === '/search/code')
+        return json({
+          total_count: 1,
+          incomplete_results: false,
+          items: [
+            {
+              path: 'package.json',
+              html_url: 'https://github.com/pilot/r2/blob/main/package.json',
+              repository: { ...syntheticRepositories()[1] },
+            },
+          ],
+        });
+      if (url.pathname === '/graphql') {
+        const ids: string[] = JSON.parse(String(init?.body)).variables.ids;
+        graphql.push(ids);
+        return json({
+          data: {
+            nodes: ids.map((node) => ({
+              databaseId: Number(node.slice(2)),
+              nameWithOwner: `pilot/r${node.slice(2)}`,
+              pushedAt: '2025-06-01T00:00:00Z',
+              defaultBranchRef: { name: 'main', target: { oid: head(2) } },
+            })),
+          },
+        });
+      }
+      throw new Error(`Unexpected endpoint ${url.pathname}`);
+    });
+    expect(await run(f.args)).toBe(0);
+    expect(searches).toEqual(
+      expect.arrayContaining([
+        { path: '/search/repositories', q: 'term pushed:>=2025-04-01' },
+        { path: '/search/code', q: 'term filename:package.json' },
+      ]),
+    );
+    expect(graphql).toEqual([['R_2']]);
+    const store = openStore(join(f.output, 'discovery.sqlite'));
+    expect(
+      [...store.iterateCandidates()].map((c) => [c.id, c.evaluation?.status]),
+    ).toEqual([
+      [1, 'pass'],
+      [2, 'pass'],
+    ]);
+    expect(store.getRun().state).toBe('complete');
+    store.close();
+  });
+
   it.each([
     ['2025-04-01T00:00:00Z', 'pass'],
     ['2025-03-31T23:59:59Z', 'fail'],
   ])(
-    'last_push evaluates %s as %s without commit collection',
+    'should evaluate last_push %s as %s without commit collection',
     async (pushedAt, status) => {
       const f = fixture();
       writeFileSync(
         f.protocol,
         JSON.stringify({
-          version: 1,
           eligibility: [{ id: 'push', type: 'last_push', since: '2025-04-01' }],
         }),
       );
@@ -655,7 +811,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
       expect(
         http.requests.every((url) => !url.pathname.startsWith('/repos/')),
       ).toBe(true);
-      const store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+      const store = openStore(join(f.output, 'discovery.sqlite'));
       expect([...store.iterateCandidates()][0]?.evaluation).toMatchObject({
         status,
         rules: [{ ruleId: 'push', status }],
@@ -668,71 +824,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     },
   );
 
-  it('schema-v2 catalog retains legacy temporal scope, exports and resume without activity', async () => {
-    const f = fixture();
-    writeFileSync(
-      f.catalog,
-      JSON.stringify({
-        version: 2,
-        filters: { pushedSince: '2025-04-01' },
-        queries: [query({ id: 'pilot' })],
-      }),
-    );
-    const http = singleRepositoryTransport({
-      pushedAt: '2025-03-31T23:59:59Z',
-    });
-    const args = f.args.filter(
-      (value, index, all) =>
-        value !== '--protocol' && all[index - 1] !== '--protocol',
-    );
-    expect(await run(args)).toBe(0);
-    expect(http.requests[0]?.searchParams.get('q')).toContain(
-      'pushed:>=2025-04-01',
-    );
-    expect(
-      http.requests.every((url) => !url.pathname.startsWith('/repos/')),
-    ).toBe(true);
-    const store = openStore(join(f.output, 'discovery.sqlite'));
-    expect(store.getCatalog().version).toBe(2);
-    expect([...store.iterateCandidates()]).toHaveLength(1);
-    store.close();
-    const db = new DatabaseSync(join(f.output, 'discovery.sqlite'), {
-      readOnly: true,
-    });
-    expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
-    expect(
-      db
-        .prepare(
-          "SELECT COUNT(*) AS count FROM sqlite_master WHERE name='activity_commits'",
-        )
-        .get()?.count,
-    ).toBe(0);
-    db.close();
-    const csv = readFileSync(join(f.output, 'candidates.csv'), 'utf8');
-    expect(csv).toContain('out_of_scope_temporal');
-    const outputs = [
-      'candidates.csv',
-      'discovery-hits.csv',
-      'coverage.json',
-      'manifest.json',
-      'report.md',
-    ].map((name) => readFileSync(join(f.output, name), 'utf8'));
-    http.fetch.mockClear();
-    expect(await main(['report', '--run', f.output], {})).toBe(0);
-    expect(await run(['discover', '--resume', f.output])).toBe(0);
-    expect(http.fetch).not.toHaveBeenCalled();
-    expect(
-      [
-        'candidates.csv',
-        'discovery-hits.csv',
-        'coverage.json',
-        'manifest.json',
-        'report.md',
-      ].map((name) => readFileSync(join(f.output, name), 'utf8')),
-    ).toEqual(outputs);
-  });
-
-  it('real HTTP rate-limit handling waits, retries and persists telemetry under the invocation budget', async () => {
+  it('should wait, retry and persist telemetry under the invocation budget on real HTTP rate limits', async () => {
     const f = fixture();
     const http = singleRepositoryTransport({ rateLimit: true });
     expect(await run([...f.args, '--activity-max-requests', '2'])).toBe(0);
@@ -740,7 +832,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect(
       (http.attemptTimes[1] ?? 0) - (http.attemptTimes[0] ?? 0),
     ).toBeGreaterThanOrEqual(2000);
-    const store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    const store = openStore(join(f.output, 'discovery.sqlite'));
     expect(store.readCollectionSummary().activity).toMatchObject({
       attempts: 2,
       retries: 1,
@@ -770,14 +862,14 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     db.close();
   });
 
-  it('native SIGINT aborts pending HTTP, persists partial state and resumes without repeating completed search', async () => {
+  it('should abort pending HTTP on native SIGINT, persist partial state and resume without repeating completed search', async () => {
     const f = fixture();
     const listeners = process.listenerCount('SIGINT');
     const http = singleRepositoryTransport({ interrupt: true });
     // No fake-clock advancement while the native signal is pending.
     expect(await main(f.args, { GITHUB_TOKEN: 'synthetic-token' })).toBe(2);
     expect(process.listenerCount('SIGINT')).toBe(listeners);
-    let store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    let store = openStore(join(f.output, 'discovery.sqlite'));
     expect(store.getRun().state).toBe('partial');
     expect(store.readCollectionSummary().activity.attempts).toBe(1);
     expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe(
@@ -816,7 +908,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect(resumed.requests.map((url) => url.pathname)).toEqual([
       '/repos/pilot/r1/commits',
     ]);
-    store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+    store = openStore(join(f.output, 'discovery.sqlite'));
     expect(store.getRun().state).toBe('complete');
     expect(store.getRun().invocations).toHaveLength(2);
     expect(store.readCandidateFacts(1).inspectionUntil).toBe(until);
@@ -825,7 +917,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     store.close();
   });
   it.each(['commits', 'branches'] as const)(
-    'plain resume inherits captured %s page boundaries and finds the next human',
+    'should inherit captured %s page boundaries on a plain resume and find the next human',
     async (mode) => {
       const f = fixture();
       const http = singleRepositoryTransport();
@@ -872,7 +964,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
           mode === 'commits' ? '1' : '2',
         ]),
       ).toBe(2);
-      let store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+      let store = openStore(join(f.output, 'discovery.sqlite'));
       const saved = store.readCandidateFacts(1);
       const checkpoint = store
         .readTasks()
@@ -903,7 +995,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
           .find((url) => url.pathname.endsWith(`/${mode}`))
           ?.searchParams.get('page'),
       ).toBe('2');
-      store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+      store = openStore(join(f.output, 'discovery.sqlite'));
       expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe(
         'pass',
       );
@@ -922,7 +1014,7 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     },
   );
 
-  it('rejects incompatible explicit resume page sizes read-only, while accepting the stored sizes', async () => {
+  it('should reject incompatible explicit resume page sizes read-only, while accepting the stored sizes', async () => {
     const f = fixture();
     const http = singleRepositoryTransport();
     expect(

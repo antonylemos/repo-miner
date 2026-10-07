@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createActivityClient } from '../src/discovery/collectors/github-activity.js';
 import { DEFAULT_COLLECTION_LIMITS } from '../src/discovery/collectors/types.js';
-import { restCommitPayload as commit } from './protocol-helpers.js';
+import { restCommitPayload as commit } from './helpers.js';
 
 const target = { repositoryId: 1, nodeId: 'R', fullName: 'owner/repo' };
 const signal = new AbortController().signal;
@@ -32,7 +32,7 @@ function setup(body: unknown, link?: string, status = 200) {
   return { client, fetchFn, sleep, beforeAttempt, onAttemptFinished };
 }
 describe('activity REST client', () => {
-  it('rejects transport redirects on every activity attempt without yielding absence', async () => {
+  it('should reject transport redirects on every activity attempt without yielding absence', async () => {
     const s = setup([]);
     s.fetchFn.mockImplementation(async (_url, init) => {
       expect(init?.redirect).toBe('error');
@@ -50,7 +50,7 @@ describe('activity REST client', () => {
       ),
     ).toBe(true);
   });
-  it('treats an unexpected redirect response as an error', async () => {
+  it('should treat an unexpected redirect response as an error', async () => {
     const s = setup([], undefined, 302);
     await expect(s.client.listBranches(target, 1, signal)).rejects.toThrow(
       /302/,
@@ -58,7 +58,7 @@ describe('activity REST client', () => {
     expect(s.fetchFn).toHaveBeenCalledOnce();
   });
   it.each(['sha', 'since', 'until', 'per_page'])(
-    'rejects mutated commit pagination %s',
+    'should reject mutated commit pagination %s',
     async (parameter) => {
       const s = setup([commit()]);
       await s.client.listCommits(target, sha, interval, 1, signal);
@@ -75,7 +75,7 @@ describe('activity REST client', () => {
       ).rejects.toThrow(/pagination/i);
     },
   );
-  it('accepts matching next pagination but still constructs its next request locally', async () => {
+  it('should accept matching next pagination but still constructs its next request locally', async () => {
     const s = setup(
       [branch],
       '<https://api.github.com/repos/owner/repo/branches?page=2&per_page=100>; rel="next"',
@@ -95,7 +95,7 @@ describe('activity REST client', () => {
     '2025-04-01T00:00:00+00:60',
     '2025-13-01T00:00:00Z',
     '2025-04-31T00:00:00Z',
-  ])('rejects invalid date %s', async (date) => {
+  ])('should reject invalid date %s', async (date) => {
     const value = commit();
     value.commit.committer.date = date;
     await expect(
@@ -103,14 +103,14 @@ describe('activity REST client', () => {
     ).rejects.toThrow(/invalid/i);
   });
   it.each([null, {}, { name: 'main', commit: {} }])(
-    'rejects malformed branch %j',
+    'should reject malformed branch %j',
     async (value) => {
       await expect(
         setup([branch, value]).client.listBranches(target, 1, signal),
       ).rejects.toThrow(/invalid/i);
     },
   );
-  it('encodes slash refs and constructs authenticated provider URLs', async () => {
+  it('should encode slash refs and constructs authenticated provider URLs', async () => {
     const s = setup(branch);
     const result = await s.client.readBranch(target, branch.name, signal);
     expect(result.ref.name).toBe(branch.name);
@@ -120,7 +120,7 @@ describe('activity REST client', () => {
     expect(s.beforeAttempt).toHaveBeenCalledOnce();
     expect(s.onAttemptFinished).toHaveBeenCalledOnce();
   });
-  it('preserves separate refs with the same SHA and uses branch page size', async () => {
+  it('should preserve separate refs with the same SHA and uses branch page size', async () => {
     const s = setup([branch, { ...branch, name: 'main' }]);
     const result = await s.client.listBranches(target, 1, signal);
     expect(result.items).toHaveLength(2);
@@ -131,7 +131,7 @@ describe('activity REST client', () => {
     ).toBe('100');
     expect(result.hasNext).toBe(false);
   });
-  it('preserves Git identities, offsets and nullable provider identities with bounded SHA queries', async () => {
+  it('should preserve Git identities, offsets and nullable provider identities with bounded SHA queries', async () => {
     const value = commit();
     const s = setup([value, { ...value, author: null }]);
     const result = await s.client.listCommits(target, sha, interval, 1, signal);
@@ -153,7 +153,7 @@ describe('activity REST client', () => {
       ...commit(),
       commit: { ...commit().commit, author: { date: '2025-02-30T00:00:00Z' } },
     },
-  ])('rejects malformed commit items %j', async (value) => {
+  ])('should reject malformed commit items %j', async (value) => {
     await expect(
       setup([commit(), value]).client.listCommits(
         target,
@@ -170,14 +170,14 @@ describe('activity REST client', () => {
     'https://api.github.com/repos/owner/repo/branches?per_page=100&page=1',
     'https://api.github.com/repos/owner/repo/branches?per_page=100&page=3',
     'https://api.github.com/repos/owner/repo/branches?per_page=30&page=2',
-  ])('rejects unsafe pagination %s', async (link) => {
+  ])('should reject unsafe pagination %s', async (link) => {
     const s = setup([branch], `<${link}>; rel="next"`);
     await expect(s.client.listBranches(target, 1, signal)).rejects.toThrow(
       /pagination/i,
     );
     expect(s.fetchFn).toHaveBeenCalledOnce();
   });
-  it('requires a further page when a full body omits next Link and paces the activity lane', async () => {
+  it('should require a further page when a full body omits next Link and paces the activity lane', async () => {
     const s = setup(Array.from({ length: 100 }, () => branch));
     expect((await s.client.listBranches(target, 1, signal)).hasNext).toBe(true);
     s.fetchFn.mockResolvedValueOnce(new Response('[]'));
@@ -186,13 +186,13 @@ describe('activity REST client', () => {
     );
     expect(s.sleep).toHaveBeenCalledWith(1000, signal);
   });
-  it('redacts token from raw payloads and normalized facts', async () => {
+  it('should redact token from raw payloads and normalized facts', async () => {
     const s = setup([{ name: 'SECRET', commit: { sha }, message: 'SECRET' }]);
     expect(
       JSON.stringify(await s.client.listBranches(target, 1, signal)),
     ).not.toContain('SECRET');
   });
-  it('rejects unsupported provider timestamp slices before fetching', async () => {
+  it('should reject unsupported provider timestamp slices before fetching', async () => {
     const s = setup([]);
     await expect(
       s.client.listCommits(
@@ -206,7 +206,7 @@ describe('activity REST client', () => {
     expect(s.fetchFn).not.toHaveBeenCalled();
   });
   it.each([403, 404, 409])(
-    'does not treat HTTP %s as absence',
+    'should not treat HTTP %s as absence',
     async (status) => {
       await expect(
         setup({}, undefined, status).client.listBranches(target, 1, signal),

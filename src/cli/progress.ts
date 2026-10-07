@@ -1,4 +1,4 @@
-import type { ProtocolProgressEvent } from '../discovery/protocol-runner.js';
+import type { ProgressEvent } from '../discovery/runner.js';
 
 const BAR_WIDTH = 24;
 /** Estimates from the first few seconds of a phase are mostly noise. */
@@ -112,7 +112,7 @@ export function createDiscoveryProgress(
   progress: Progress,
 ): (
   event:
-    | ProtocolProgressEvent
+    | ProgressEvent
     | { phase: 'enrichment'; done: number; total: number; label: string },
 ) => void {
   let phase = '';

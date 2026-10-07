@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { canonicalJson } from '../catalog.js';
+import { canonicalJson, catalogHash } from '../catalog.js';
 import {
   BudgetExhaustedError,
   type CollectionLimits,
@@ -15,26 +15,25 @@ import type {
   CommitFact,
   FactRequest,
   ProtocolEvaluation,
-  ProtocolStudyConfig,
   RefObservation,
   RepositoryObservation,
+  StudyConfig,
 } from '../eligibility/types.js';
 import type { HttpAttemptEvent } from '../http.js';
-import { isUsablePush } from '../scope.js';
 import { parseStudyConfig } from '../study-config.js';
-import type { StoredCandidate, StoredHit, Subquery } from '../types.js';
+import type { Candidate, StoredHit, Subquery } from '../types.js';
 import {
+  inspectDatabase,
   openConnection,
   type Row,
   SEARCH_SCHEMA,
   transaction,
 } from './connection.js';
 import { createSearchData, type SearchStore } from './search-data.js';
-export type ProtocolRun = {
+export type Run = {
   id: string;
-  schemaVersion: 3;
-  catalog: ProtocolStudyConfig['catalog'];
-  protocol: ProtocolStudyConfig['protocol'];
+  catalog: StudyConfig['catalog'];
+  protocol: StudyConfig['protocol'];
   catalogHash: string;
   protocolHash: string;
   evaluatorVersions: Record<string, number>;
@@ -48,22 +47,24 @@ export type ProtocolRun = {
     startedAt: string;
   }>;
 };
-export type StoredProtocolCandidate = StoredCandidate & {
+export type StoredCandidate = Candidate & {
+  firstSeenAt: string;
+  metadataObservedAt: string | null;
   evaluation: ProtocolEvaluation | null;
   factsRevision: number;
   evaluationRevision: number | null;
 };
-export interface ProtocolStore extends SearchStore {
+export interface DiscoveryStore extends SearchStore {
   createRun(input: {
-    config: ProtocolStudyConfig;
+    config: StudyConfig;
     subqueries: Subquery[];
     startedAt: string;
     expansionDate: string;
     limits: CollectionLimits;
-  }): ProtocolRun;
-  getRun(): ProtocolRun;
-  getStudyConfig(): ProtocolStudyConfig;
-  iterateCandidates(): Iterable<StoredProtocolCandidate>;
+  }): Run;
+  getRun(): Run;
+  getStudyConfig(): StudyConfig;
+  iterateCandidates(): Iterable<StoredCandidate>;
   readHits(): StoredHit[];
   readCandidateFacts(repositoryId: number): CandidateFacts;
   beginInspection(repositoryId: number, until: string): void;
@@ -94,7 +95,7 @@ export interface ProtocolStore extends SearchStore {
   readCollectionSummary(): CollectionSummary;
   startInvocation(limits: CollectionLimits, now: string): string;
   finish(input: { state: 'complete' | 'partial'; endedAt: string }): void;
-  withReadSnapshot<T>(work: (store: ProtocolStore) => Promise<T>): Promise<T>;
+  withReadSnapshot<T>(work: (store: DiscoveryStore) => Promise<T>): Promise<T>;
   close(): void;
 }
 const SCHEMA =
@@ -139,11 +140,12 @@ function validateLimits(limits: CollectionLimits): void {
   )
     throw new Error('Invalid collection limits');
 }
-export function openProtocolStore(path: string): ProtocolStore {
-  const db = openConnection(path, 3, SCHEMA);
-  db.function('is_usable_push', { deterministic: true }, (value) =>
-    isUsablePush(value) ? 1 : 0,
-  );
+/** Validates an existing run database without opening it for writing. */
+export function inspectStore(path: string): void {
+  inspectDatabase(path, SCHEMA);
+}
+export function openStore(path: string): DiscoveryStore {
+  const db = openConnection(path, SCHEMA);
   const tx = (work: () => void) => transaction(db, work);
   const get = (sql: string, ...values: Array<string | number | null>) =>
     db.prepare(sql).get(...values) as Row | undefined;
@@ -191,9 +193,7 @@ export function openProtocolStore(path: string): ProtocolStore {
     if (!row) throw new Error('Unknown collection task');
     return row;
   };
-  function* candidates(
-    repositoryId?: number,
-  ): Generator<StoredProtocolCandidate> {
+  function* candidates(repositoryId?: number): Generator<StoredCandidate> {
     for (const row of repositoryId === undefined
       ? all('SELECT * FROM candidates ORDER BY repository_id')
       : all('SELECT * FROM candidates WHERE repository_id=?', repositoryId)) {
@@ -211,7 +211,6 @@ export function openProtocolStore(path: string): ProtocolStore {
         metadata: parse(firstRest?.metadata_json ?? row.metadata_json),
         firstSeenAt: String(row.first_seen_at),
         metadataObservedAt: String(firstRest?.fetched_at ?? row.first_seen_at),
-        enrichment: null,
         factsRevision: Number(row.facts_revision),
         evaluation: e ? parse(e.data_json) : null,
         evaluationRevision: e ? Number(e.facts_revision) : null,
@@ -222,15 +221,13 @@ export function openProtocolStore(path: string): ProtocolStore {
   // Interrupted reservations remain persisted with unknown telemetry after resume.
   const ownedReservations = new Map<string, number>();
   let snapshot = false;
-  const store: ProtocolStore = {
+  const store: DiscoveryStore = {
     ...search,
     createRun(input) {
       const config = parseStudyConfig(
         input.config.catalog,
         input.config.protocol,
       );
-      if (config.kind !== 'protocol')
-        throw new Error('Expected protocol study configuration');
       validateLimits(input.limits);
       if (get('SELECT id FROM runs LIMIT 1'))
         throw new Error('This database already contains a protocol run');
@@ -240,7 +237,7 @@ export function openProtocolStore(path: string): ProtocolStore {
           'INSERT INTO runs VALUES (?,?,?,?,?,?,?,NULL,?)',
           id,
           canonicalJson(config),
-          hash(config.catalog),
+          catalogHash(config.catalog),
           hash(config.protocol),
           canonicalJson(EVALUATOR_VERSIONS),
           input.startedAt,
@@ -281,10 +278,9 @@ export function openProtocolStore(path: string): ProtocolStore {
     },
     getRun() {
       const r = runRow();
-      const config = parse<ProtocolStudyConfig>(r.config_json);
+      const config = parse<StudyConfig>(r.config_json);
       return {
         id: String(r.id),
-        schemaVersion: 3,
         catalog: config.catalog,
         protocol: config.protocol,
         catalogHash: String(r.catalog_hash),
@@ -293,7 +289,7 @@ export function openProtocolStore(path: string): ProtocolStore {
         startedAt: String(r.started_at),
         expansionDate: String(r.expansion_date),
         endedAt: r.ended_at === null ? null : String(r.ended_at),
-        state: r.state as ProtocolRun['state'],
+        state: r.state as Run['state'],
         invocations: all('SELECT * FROM invocations ORDER BY rowid').map(
           (i) => ({
             id: String(i.id),

@@ -23,19 +23,17 @@ const catalog = config.catalog;
 
 describe('configured discovery catalog', () => {
   it('should declare approved queries separately from the human activity protocol', () => {
-    expect(config.kind).toBe('protocol');
-    expect(catalog.version).toBe(3);
-    if (config.kind === 'protocol')
-      expect(config.protocol.eligibility).toEqual([
-        {
-          id: 'recent-human-commit',
-          type: 'recent_commit',
-          since: '2025-04-01',
-          dateField: 'committedDate',
-          branches: 'all',
-          authors: 'human',
-        },
-      ]);
+    expect(Object.keys(config.catalog)).toEqual(['queries']);
+    expect(config.protocol.eligibility).toEqual([
+      {
+        id: 'recent-human-commit',
+        type: 'recent_commit',
+        since: '2025-04-01',
+        dateField: 'committedDate',
+        branches: 'all',
+        authors: 'human',
+      },
+    ]);
     expect(catalog.queries).toHaveLength(28);
     const count = (strategy: string) =>
       catalog.queries.filter((q) => q.strategy === strategy).length;

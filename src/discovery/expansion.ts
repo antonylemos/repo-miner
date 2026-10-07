@@ -1,22 +1,11 @@
 import { isIsoDate } from './catalog.js';
-import type { Catalog, Interval, Query, Subquery } from './types.js';
+import type { Interval, Query, Subquery } from './types.js';
 
 type Slice = { label: string; qualifier: string };
 
 const DAY_MS = 86_400_000;
 
-/** Expands catalog queries into concrete searches; the result depends only on the catalog and the date. */
-export function expandCatalog(
-  catalog: Catalog,
-  expansionDate: string,
-): Subquery[] {
-  return expandQueries(
-    catalog.queries,
-    expansionDate,
-    `pushed:>=${catalog.filters.pushedSince}`,
-  );
-}
-
+/** Expands catalog queries into concrete searches; the result depends only on the queries and the date. */
 export function expandQueries(
   queries: Query[],
   expansionDate: string,

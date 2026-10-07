@@ -62,7 +62,7 @@ const client = (): ActivityClient => ({
   listCommits: vi.fn().mockResolvedValue(page([])),
 });
 describe('activity collector', () => {
-  it('keeps default-only missing identity unknown after nonempty enumeration', async () => {
+  it('should keep default-only missing identity unknown after nonempty enumeration', async () => {
     const f = facts();
     for (const observation of f.observations)
       observation.data.defaultBranchRef = null;
@@ -76,7 +76,7 @@ describe('activity collector', () => {
     expect(s.state).toBe('failed');
     expect(s.reason).toBe('default_ref_metadata_missing');
   });
-  it('prioritizes default history and validated renamed identity before enumeration', async () => {
+  it('should prioritiz default history and validated renamed identity before enumeration', async () => {
     const c = client();
     const t = task();
     const s = await collectActivityStep(t, facts(), c, signal);
@@ -93,7 +93,7 @@ describe('activity collector', () => {
     expect(c.listBranches).not.toHaveBeenCalled();
     expect(s.state).toBe('pending');
   });
-  it('resumes saved SHA and page despite changed or deleted metadata refs', async () => {
+  it('should resume saved SHA and page despite changed or deleted metadata refs', async () => {
     const c = client();
     const t = task();
     t.checkpoint = {
@@ -115,7 +115,7 @@ describe('activity collector', () => {
       signal,
     );
   });
-  it('does not treat errors or incomplete enumeration as absence', async () => {
+  it('should not treat errors or incomplete enumeration as absence', async () => {
     const f = facts();
     for (const observation of f.observations)
       observation.data.defaultBranchRef = null;
@@ -125,7 +125,7 @@ describe('activity collector', () => {
     expect(s.state).toBe('failed');
     expect(s.checkpoint?.refsComplete).toBe(false);
   });
-  it('continues bot-only pages, retaining duplicate SHA ref membership', async () => {
+  it('should continue bot-only pages, retaining duplicate SHA ref membership', async () => {
     const c = client();
     const t = task();
     const commit = {
@@ -163,7 +163,7 @@ describe('activity collector', () => {
     expect(second.commits[0]?.author.account?.providerType).toBe('User');
     expect(second.checkpoint?.defaultRef?.complete).toBe(true);
   });
-  it('collects human evidence exclusively on another branch without default metadata', async () => {
+  it('should collect human evidence exclusively on another branch without default metadata', async () => {
     const f = facts();
     for (const observation of f.observations)
       observation.data.defaultBranchRef = null;
@@ -200,7 +200,7 @@ describe('activity collector', () => {
       signal,
     );
   });
-  it('collects a recent ancestor even when the observed head commit is older than since', async () => {
+  it('should collect a recent ancestor even when the observed head commit is older than since', async () => {
     const f = facts();
     const identity = {
       name: null,
@@ -237,7 +237,7 @@ describe('activity collector', () => {
     expect(s.commits[0]?.committedDate).toBe(ancestor.committedDate);
     expect(s.commits[0]?.refs).toEqual([ref]);
   });
-  it('enumerates more than 100 refs and collects dependabot ancestry without filtering names', async () => {
+  it('should enumerate more than 100 refs and collects dependabot ancestry without filtering names', async () => {
     const c = client();
     const t = task();
     t.checkpoint = {
@@ -282,7 +282,7 @@ describe('activity collector', () => {
     expect(s.refs[0]?.name).toBe('dependabot/npm/a');
     expect(s.state).toBe('complete');
   });
-  it('requires successful final enumeration before proving missing default', async () => {
+  it('should require successful final enumeration before proving missing default', async () => {
     const c = client();
     const t = task();
     if (t.request.kind === 'commit_history') t.request.branches = 'default';
