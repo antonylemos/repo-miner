@@ -79,10 +79,11 @@ export async function main(
     )
     .action(async (options: DiscoverOptions) => {
       const command = parseDiscoverOptions(options);
-      const limits = collectionLimits(command);
+      let limits = collectionLimits(command);
       const config = command.resume
         ? validateResume(command)
         : readStudyConfig(command);
+      if (command.resume) limits = resumePaginationLimits(command, limits);
       if (config?.kind === 'legacy' && hasActivityOptions(command))
         throw new Error('Activity options require a version 3 catalog.');
       if (!env.GITHUB_TOKEN?.trim()) {
@@ -232,6 +233,47 @@ function validateResume(command: DiscoverOptions): null {
   if (version === 2 && hasActivityOptions(command))
     throw new Error('Activity options require a schema 3 run.');
   return null;
+}
+
+/** Page numbers retain their original boundaries across all invocations. */
+function resumePaginationLimits(
+  command: DiscoverOptions,
+  limits: CollectionLimits,
+): CollectionLimits {
+  const path = join(command.resume as string, 'discovery.sqlite');
+  if (inspectVersion(path) !== 3) return limits;
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const row = db
+      .prepare('SELECT limits_json FROM invocations ORDER BY rowid LIMIT 1')
+      .get();
+    if (!row) throw new Error('Missing original collection limits.');
+    const stored = JSON.parse(
+      String(row.limits_json),
+    ) as Partial<CollectionLimits>;
+    for (const [key, option] of [
+      ['commitsPerPage', 'activityCommitsPerPage'],
+      ['branchesPerPage', 'activityBranchesPerPage'],
+    ] as const) {
+      const size = stored[key];
+      if (
+        typeof size !== 'number' ||
+        !Number.isInteger(size) ||
+        size < 1 ||
+        size > 100
+      )
+        throw new Error('Invalid stored pagination size.');
+      if (command[option] !== undefined && limits[key] !== size)
+        throw new Error(`Resume must preserve the original ${key} (${size}).`);
+    }
+    return {
+      ...limits,
+      commitsPerPage: stored.commitsPerPage as number,
+      branchesPerPage: stored.branchesPerPage as number,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 /** Validate schema and stored protocol before opening a writable run store. */

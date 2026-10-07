@@ -824,4 +824,160 @@ describe('controlled protocol integration (mock transport, not live GitHub since
     expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe('pass');
     store.close();
   });
+  it.each(['commits', 'branches'] as const)(
+    'plain resume inherits captured %s page boundaries and finds the next human',
+    async (mode) => {
+      const f = fixture();
+      const http = singleRepositoryTransport();
+      const original = http.fetch.getMockImplementation();
+      http.fetch.mockImplementation(async (input, init) => {
+        const url = new URL(String(input));
+        if (!url.pathname.startsWith('/repos/')) {
+          if (!original) throw new Error('Missing transport');
+          return original(input, init);
+        }
+        http.requests.push(url);
+        const size = Number(url.searchParams.get('per_page'));
+        const offset = (Number(url.searchParams.get('page')) - 1) * size;
+        if (url.pathname.endsWith('/branches')) {
+          const branches =
+            mode === 'branches'
+              ? [
+                  { name: 'bot', commit: { sha: 'b'.repeat(40) } },
+                  { name: 'human', commit: { sha: 'c'.repeat(40) } },
+                ]
+              : [];
+          return json(branches.slice(offset, offset + size));
+        }
+        if (url.pathname !== '/repos/pilot/r1/commits')
+          throw new Error('Unexpected endpoint');
+        const commits =
+          mode === 'commits'
+            ? [syntheticCommit(101, { author: 'bot' }), syntheticCommit(102)]
+            : url.searchParams.get('sha') === 'c'.repeat(40)
+              ? [syntheticCommit(102)]
+              : [];
+        return json(commits.slice(offset, offset + size));
+      });
+      const pageOption =
+        mode === 'commits'
+          ? '--activity-commits-per-page'
+          : '--activity-branches-per-page';
+      expect(
+        await run([
+          ...f.args,
+          pageOption,
+          '1',
+          '--activity-max-requests',
+          mode === 'commits' ? '1' : '2',
+        ]),
+      ).toBe(2);
+      let store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+      const saved = store.readCandidateFacts(1);
+      const checkpoint = store
+        .readTasks()
+        .find((task) => task.request.kind === 'commit_history')?.checkpoint;
+      if (mode === 'commits') expect(checkpoint?.defaultRef?.nextPage).toBe(2);
+      else expect(checkpoint?.nextBranchesPage).toBe(2);
+      store.close();
+      const beforeResume = http.requests.length;
+      expect(
+        await run([
+          'discover',
+          '--resume',
+          f.output,
+          '--activity-max-requests',
+          '10',
+          '--activity-max-duration-ms',
+          '60000',
+        ]),
+      ).toBe(0);
+      const resumed = http.requests.slice(beforeResume);
+      expect(
+        resumed
+          .find((url) => url.pathname.endsWith(`/${mode}`))
+          ?.searchParams.get('per_page'),
+      ).toBe('1');
+      expect(
+        resumed
+          .find((url) => url.pathname.endsWith(`/${mode}`))
+          ?.searchParams.get('page'),
+      ).toBe('2');
+      store = openProtocolStore(join(f.output, 'discovery.sqlite'));
+      expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe(
+        'pass',
+      );
+      expect(store.readCandidateFacts(1).commits).toEqual(
+        expect.arrayContaining(saved.commits),
+      );
+      expect(store.readCandidateFacts(1).inspectionUntil).toBe(
+        saved.inspectionUntil,
+      );
+      expect(store.getRun().invocations[1]?.limits).toMatchObject({
+        maxActivityRequestsPerCandidate: 10,
+        maxActivityDurationMs: 60000,
+        [mode === 'commits' ? 'commitsPerPage' : 'branchesPerPage']: 1,
+      });
+      store.close();
+    },
+  );
+
+  it('rejects incompatible explicit resume page sizes read-only, while accepting the stored sizes', async () => {
+    const f = fixture();
+    const http = singleRepositoryTransport();
+    expect(
+      await run([
+        ...f.args,
+        '--activity-commits-per-page',
+        '2',
+        '--activity-branches-per-page',
+        '2',
+      ]),
+    ).toBe(0);
+    const path = join(f.output, 'discovery.sqlite');
+    const before = readFileSync(path);
+    const outputs = [
+      'candidates.csv',
+      'discovery-hits.csv',
+      'coverage.json',
+      'manifest.json',
+      'report.md',
+    ].map((name) => readFileSync(join(f.output, name), 'utf8'));
+    http.fetch.mockClear();
+    for (const option of [
+      '--activity-commits-per-page',
+      '--activity-branches-per-page',
+    ]) {
+      for (const value of ['1', '3']) {
+        expect(
+          await main(['discover', '--resume', f.output, option, value], {
+            GITHUB_TOKEN: 'synthetic-token',
+          }),
+        ).toBe(1);
+        expect(http.fetch).not.toHaveBeenCalled();
+        expect(readFileSync(path)).toEqual(before);
+        expect(
+          [
+            'candidates.csv',
+            'discovery-hits.csv',
+            'coverage.json',
+            'manifest.json',
+            'report.md',
+          ].map((name) => readFileSync(join(f.output, name), 'utf8')),
+        ).toEqual(outputs);
+      }
+    }
+    expect(
+      await run([
+        'discover',
+        '--resume',
+        f.output,
+        '--activity-commits-per-page',
+        '2',
+        '--activity-branches-per-page',
+        '2',
+      ]),
+    ).toBe(0);
+    expect(http.fetch).not.toHaveBeenCalled();
+  });
 });
