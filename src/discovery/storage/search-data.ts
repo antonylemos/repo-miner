@@ -11,6 +11,7 @@ import type {
 } from '../types.js';
 
 type StoredRow = Record<string, unknown>;
+
 export interface SearchStore {
   /** Reads subqueries in expansion order. */
   getSubqueries(): Subquery[];
@@ -31,6 +32,7 @@ export interface SearchStore {
   /** Aggregates page and checkpoint facts for every subquery. */
   readCoverage(): Coverage[];
 }
+
 const SUBQUERY_SELECT = `
   SELECT s.subquery_id, s.query_id, q.strategy, q.endpoint, s.q_effective, s.partition_label
   FROM subqueries s JOIN queries q ON q.query_id = s.query_id`;
@@ -92,6 +94,7 @@ export function createSearchData(
         .all() as StoredRow[];
       return rows.map(toSubquery);
     },
+
     getCheckpoint(subqueryId) {
       const row = database
         .prepare(
@@ -105,6 +108,7 @@ export function createSearchData(
         state: row.state as Checkpoint['state'],
       };
     },
+
     savePage(subquery, page, result, checkpoint, fetchedAt) {
       if (checkpoint.subqueryId !== subquery.id) {
         throw new Error(
@@ -176,6 +180,7 @@ export function createSearchData(
           .run(checkpoint.subqueryId, checkpoint.nextPage, checkpoint.state);
       });
     },
+
     markSubquery(checkpoint, reason) {
       database
         .prepare(
@@ -188,6 +193,7 @@ export function createSearchData(
           reason,
         );
     },
+
     readHits() {
       const rows = database
         .prepare(
@@ -218,12 +224,14 @@ export function createSearchData(
         url: String(row.url),
       }));
     },
+
     readCoverage() {
       const rows = database
         .prepare(`${COVERAGE_SELECT} ORDER BY s.ordinal`)
         .all() as StoredRow[];
       return rows.map(coverageFor);
     },
+
     readSubqueryCoverage(subqueryId) {
       const row = database
         .prepare(`${COVERAGE_SELECT} WHERE s.subquery_id = ?`)
@@ -233,6 +241,7 @@ export function createSearchData(
     },
   } satisfies SearchStore & { readHits(): StoredHit[] };
 }
+
 function toSubquery(row: StoredRow): Subquery {
   return {
     id: String(row.subquery_id),

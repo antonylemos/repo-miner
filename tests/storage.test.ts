@@ -374,3 +374,146 @@ test('should not initialize a run on a tableless existing database', () => {
   expect(() => openStore(tableless)).toThrow(/incompatible format/);
   expect(readFileSync(tableless)).toEqual(bytes);
 });
+test('should summarize attempts, retries, durations and interrupted reservations per invocation', () => {
+  const { store } = setup();
+  store.syncTasks(1, [request(1)]);
+  store.syncTasks(2, [request(2)]);
+  const [first, second] = store.readTasks();
+  const firstTask = required(first);
+  const secondTask = required(second);
+  const event = {
+    attempt: 1,
+    startedAt: 100,
+    finishedAt: 110,
+    waitMs: 20,
+    status: 500,
+    responseBytes: 5,
+    rateLimitResource: 'core',
+    rateLimitUsed: 3,
+    error: null,
+  };
+  const invocationA = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'a');
+  store.reserveActivityAttempt(firstTask.id, invocationA, 20);
+  store.saveAttempt(firstTask.id, event);
+  store.reserveActivityAttempt(firstTask.id, invocationA, 20);
+  store.saveAttempt(firstTask.id, {
+    ...event,
+    attempt: 2,
+    status: 200,
+    waitMs: 5,
+    responseBytes: 7,
+  });
+  store.recordCollectionDuration(firstTask.id, invocationA, 40);
+  store.reserveActivityAttempt(secondTask.id, invocationA, 20);
+  store.saveMetadataAttempt(invocationA, [1, 2], {
+    ...event,
+    startedAt: 200,
+    finishedAt: 230,
+    waitMs: 4,
+    responseBytes: 9,
+  });
+  const invocationB = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'b');
+  store.reserveActivityAttempt(firstTask.id, invocationB, 20);
+  store.saveAttempt(firstTask.id, {
+    ...event,
+    waitMs: 3,
+    responseBytes: null,
+  });
+  store.recordCollectionDuration(firstTask.id, invocationB, 25);
+  store.saveMetadataAttempt(invocationB, [1], {
+    ...event,
+    startedAt: 10,
+    finishedAt: 15,
+    waitMs: 0,
+    responseBytes: null,
+  });
+  store.saveCollectionStep(firstTask, step(1));
+
+  const summary = store.readCollectionSummary();
+  const metrics = (
+    attempts: number,
+    retries: number,
+    responseBytes: number | null,
+    waitMs: number,
+    activeDurationMs: number,
+  ) => ({
+    attempts,
+    retries,
+    responseBytes,
+    waitMs,
+    activeDurationMs,
+    rateLimitCost: null,
+  });
+  expect(summary.activity).toEqual(metrics(4, 1, null, 28, 65));
+  expect(summary.metadata).toEqual(metrics(2, 0, null, 4, 39));
+  expect(summary.required).toEqual({
+    pending: 1,
+    failed: 0,
+    limited: 0,
+    pendingEvaluations: 2,
+  });
+  expect(summary.unknownReasons).toEqual({});
+  expect(
+    summary.perCandidate.map(
+      ({ repositoryId, invocationId, activity, ...examined }) => ({
+        repositoryId,
+        invocationId,
+        activity,
+        ...examined,
+      }),
+    ),
+  ).toEqual([
+    {
+      repositoryId: 1,
+      invocationId: invocationA,
+      activity: metrics(2, 1, 12, 25, 40),
+      commitsExamined: 0,
+      refsExamined: 0,
+    },
+    {
+      repositoryId: 2,
+      invocationId: invocationA,
+      activity: metrics(1, 0, null, 0, 0),
+      commitsExamined: 0,
+      refsExamined: 0,
+    },
+    {
+      repositoryId: 1,
+      invocationId: invocationB,
+      activity: metrics(1, 0, null, 3, 25),
+      commitsExamined: 1,
+      refsExamined: 1,
+    },
+  ]);
+  expect(
+    summary.invocations.map(({ id, activity, metadata }) => ({
+      id,
+      activity,
+      metadata,
+    })),
+  ).toEqual([
+    {
+      id: expect.any(String),
+      activity: metrics(0, 0, null, 0, 0),
+      metadata: metrics(0, 0, null, 0, 0),
+    },
+    {
+      id: invocationA,
+      activity: metrics(3, 1, null, 25, 40),
+      metadata: metrics(1, 0, 9, 4, 34),
+    },
+    {
+      id: invocationB,
+      activity: metrics(1, 0, null, 3, 25),
+      metadata: metrics(1, 0, null, 0, 5),
+    },
+  ]);
+});
+test('should reject a snapshot opened inside another snapshot and release the outer one', async () => {
+  const { store } = setup();
+
+  await expect(
+    store.withReadSnapshot((outer) => outer.withReadSnapshot(async () => 1)),
+  ).rejects.toThrow('Nested snapshots are unsupported');
+  await expect(store.withReadSnapshot(async () => 2)).resolves.toBe(2);
+});

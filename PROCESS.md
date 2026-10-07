@@ -262,6 +262,27 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | `config/catalogs/` | Catálogos de estudos; `micro-frontends.json` é o caso de uso atual. |
 | `tests/` | Testes de cada módulo, sem acesso à rede. |
 
+### Armazenamento (`src/discovery/storage/`)
+
+`store.ts` define os tipos públicos, `openStore` e `inspectStore` e compõe os módulos abaixo em um único `DiscoveryStore`. Cada módulo responde a uma pergunta:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `schema.ts` | DDL multilinha, uma constante por tabela, em ordem de dependência. |
+| `connection.ts` | Abertura do banco, validação de bancos existentes e transações. |
+| `database.ts` | `get`, `all`, `run`, `tx`, `insertIfAbsent` e leituras que falham com erro conhecido. |
+| `search-data.ts` | Consultas, subconsultas, páginas, acertos e checkpoints da busca. |
+| `runs.ts` | Rodada, invocações e limites. |
+| `facts.ts` | Candidatos, observações, inspeção e avaliações. |
+| `tasks.ts` | Tarefas de coleta e os fatos que cada passo grava. |
+| `attempts.ts` | Tentativas, orçamento por invocação e durações. |
+| `summary.ts` | Resumo e métricas da coleta. |
+| `snapshot.ts` | Leitura consistente de um instante do banco. |
+
+Convenção de espaçamento: uma linha em branco entre declarações de topo e entre os membros de objetos de API. O Biome não verifica isso, então a revisão é quem garante.
+
+`INSERT`s nomeiam as colunas e o DDL não é derivado com `String.replace`.
+
 ### Ambiente e verificações
 
 O projeto fixa Node.js `26.9.0` em `.nvmrc` e pnpm `9.15.9` em `package.json`:
