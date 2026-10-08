@@ -10,6 +10,7 @@ type AttemptsMethods = Pick<
   | 'saveAttempt'
   | 'saveMetadataAttempt'
   | 'recordCollectionDuration'
+  | 'readActiveDuration'
 >;
 
 /** Request attempts, their per-invocation budgets, and collection durations. */
@@ -21,11 +22,24 @@ export function createAttempts({
   taskRow,
   taskFromRow,
 }: DatabaseAccess): AttemptsMethods {
+  const readActiveDuration = (repositoryId: number, invocationId: string) =>
+    Number(
+      get(
+        `SELECT COALESCE(SUM(d.duration_ms), 0) AS n
+         FROM collection_durations d
+         JOIN collection_tasks t ON t.id = d.task_id
+         WHERE t.repository_id = ? AND d.invocation_id = ?`,
+        repositoryId,
+        invocationId,
+      )?.n,
+    );
   // Only this connection's current transport attempt may complete its reservation.
   // Interrupted reservations remain persisted with unknown telemetry after resume.
   const ownedReservations = new Map<string, number>();
 
   return {
+    readActiveDuration,
+
     reserveActivityAttempt(taskId, invocationId, limit) {
       if (!Number.isInteger(limit) || limit <= 0)
         throw new Error('Invalid request budget');
@@ -56,16 +70,7 @@ export function createAttempts({
         )
           throw new BudgetExhaustedError('request_budget');
 
-        const elapsedMs = Number(
-          get(
-            `SELECT COALESCE(SUM(d.duration_ms), 0) AS n
-             FROM collection_durations d
-             JOIN collection_tasks t ON t.id = d.task_id
-             WHERE t.repository_id = ? AND d.invocation_id = ?`,
-            task.repositoryId,
-            invocationId,
-          )?.n,
-        );
+        const elapsedMs = readActiveDuration(task.repositoryId, invocationId);
         if (
           limits.maxActivityDurationMs !== null &&
           elapsedMs >= limits.maxActivityDurationMs

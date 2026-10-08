@@ -223,18 +223,14 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
       stopped.add(task.id);
       return;
     }
-    const elapsed =
-      store
-        .readCollectionSummary()
-        .perCandidate.find(
-          (c) =>
-            c.repositoryId === task.repositoryId &&
-            c.invocationId === invocationId,
-        )?.activity.activeDurationMs ?? 0;
     const remaining =
       limits.maxActivityDurationMs === null
         ? null
-        : Math.max(0, limits.maxActivityDurationMs - elapsed);
+        : Math.max(
+            0,
+            limits.maxActivityDurationMs -
+              store.readActiveDuration(task.repositoryId, invocationId),
+          );
     if (remaining === 0) {
       store.saveCollectionStep(
         task,

@@ -206,6 +206,18 @@ const TASK_REFS = `
   );
 `;
 
+/** Per-candidate reads filter on these columns; without them each read scans the whole table. */
+const PER_CANDIDATE_INDEXES = `
+  CREATE INDEX IF NOT EXISTS repository_observations_repository
+    ON repository_observations (repository_id);
+  CREATE INDEX IF NOT EXISTS collection_pages_task
+    ON collection_pages (task_id);
+  CREATE INDEX IF NOT EXISTS collection_tasks_repository
+    ON collection_tasks (repository_id);
+  CREATE INDEX IF NOT EXISTS collection_attempts_repository
+    ON collection_attempts (repository_id, invocation_id, kind);
+`;
+
 /** Tables are listed in dependency order so every REFERENCES target exists first. */
 export const SCHEMA = [
   RUNS,
@@ -229,4 +241,5 @@ export const SCHEMA = [
   EVALUATIONS,
   COLLECTION_FACT_INVOCATIONS,
   TASK_REFS,
+  PER_CANDIDATE_INDEXES,
 ].join('');

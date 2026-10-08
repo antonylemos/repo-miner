@@ -115,6 +115,8 @@ export interface DiscoveryStore extends SearchStore {
     invocationId: string,
     durationMs: number,
   ): void;
+  /** Active collection time already recorded for a candidate in one invocation. */
+  readActiveDuration(repositoryId: number, invocationId: string): number;
   saveEvaluation(
     repositoryId: number,
     evaluation: ProtocolEvaluation,

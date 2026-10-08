@@ -47,3 +47,38 @@ test('should insert a row once and report whether it changed the database', () =
     { repository_id: 1, until: '2026-10-06T12:00:00Z' },
   ]);
 });
+
+test.each([
+  [
+    'observations of a repository',
+    'SELECT data_json FROM repository_observations WHERE repository_id = ? ORDER BY rowid',
+  ],
+  [
+    'pages of a task',
+    'SELECT id FROM collection_pages WHERE task_id = ? ORDER BY id',
+  ],
+  [
+    'tasks of a repository',
+    "SELECT * FROM collection_tasks WHERE repository_id = ? AND state != 'cancelled' ORDER BY id",
+  ],
+  [
+    'attempts of a repository in an invocation',
+    "SELECT COUNT(*) AS n FROM collection_attempts WHERE repository_id = ? AND invocation_id = ? AND kind = 'activity'",
+  ],
+])('should read the %s through an index', (_name, sql) => {
+  const access = setup();
+  const plan = access
+    .all(
+      `EXPLAIN QUERY PLAN ${sql}`,
+      ...sql
+        .split('?')
+        .slice(1)
+        .map(() => 1),
+    )
+    .map((row) => String(row.detail));
+
+  expect(plan.some((detail) => /^SEARCH .* USING .*INDEX/.test(detail))).toBe(
+    true,
+  );
+  expect(plan.filter((detail) => detail.startsWith('SCAN'))).toEqual([]);
+});

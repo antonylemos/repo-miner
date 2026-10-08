@@ -48,20 +48,44 @@ export function createSummary(
          ORDER BY MIN(d.rowid)`,
       );
 
+      // Groups are indexed once per key, preserving source order, so each
+      // metrics() call reads only the groups it sums instead of the whole list.
+      const index = (rows: Row[], keys: (row: Row) => string[]) => {
+        const map = new Map<string, Row[]>();
+        for (const row of rows)
+          for (const key of keys(row)) {
+            const bucket = map.get(key);
+            if (bucket) bucket.push(row);
+            else map.set(key, [row]);
+          }
+        return map;
+      };
+      const attemptIndex = index(attemptGroups, (g) => [
+        `${g.kind}`,
+        `${g.kind}:${g.invocation_id}`,
+        `${g.kind}:${g.invocation_id}:${g.repository_id}`,
+      ]);
+      const durationIndex = index(durationGroups, (g) => [
+        '',
+        `${g.invocation_id}`,
+        `${g.invocation_id}:${g.repository_id}`,
+      ]);
+      const none: Row[] = [];
+      const sum = (rows: Row[], column: string) =>
+        rows.reduce((total, row) => total + Number(row[column]), 0);
+
       const metrics = (
         kind: string,
         invocationId?: string,
         repositoryId?: number,
       ): RequestMetrics => {
-        const groups = attemptGroups.filter(
-          (group) =>
-            group.kind === kind &&
-            (!invocationId || group.invocation_id === invocationId) &&
-            (repositoryId === undefined ||
-              Number(group.repository_id) === repositoryId),
-        );
-        const sum = (rows: Row[], column: string) =>
-          rows.reduce((total, row) => total + Number(row[column]), 0);
+        const scope = !invocationId
+          ? ''
+          : repositoryId === undefined
+            ? invocationId
+            : `${invocationId}:${repositoryId}`;
+        const groups =
+          attemptIndex.get(scope ? `${kind}:${scope}` : kind) ?? none;
         const attempts = sum(groups, 'attempts');
         const bytesComplete = sum(groups, 'bytes_known') === attempts;
 
@@ -74,15 +98,7 @@ export function createSummary(
           waitMs: sum(groups, 'wait_ms'),
           activeDurationMs:
             kind === 'activity'
-              ? sum(
-                  durationGroups.filter(
-                    (group) =>
-                      (!invocationId || group.invocation_id === invocationId) &&
-                      (repositoryId === undefined ||
-                        Number(group.repository_id) === repositoryId),
-                  ),
-                  'duration_ms',
-                )
+              ? sum(durationIndex.get(scope) ?? none, 'duration_ms')
               : sum(groups, 'elapsed_ms'),
           rateLimitCost: null,
         };

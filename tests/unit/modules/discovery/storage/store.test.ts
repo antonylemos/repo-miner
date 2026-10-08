@@ -12,7 +12,7 @@ import type {
   FactRequest,
 } from '@/modules/discovery/model/facts.js';
 import type { DiscoveryStore } from '@/modules/discovery/model/store.js';
-import { openStore } from '@/modules/discovery/storage/store.js';
+import { inspectStore, openStore } from '@/modules/discovery/storage/store.js';
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Missing test fixture');
@@ -627,4 +627,272 @@ test('should bump the facts revision on every change that alters evaluated facts
     store.reserveActivityAttempt(task.id, invocationId, 20);
     store.recordCollectionDuration(task.id, invocationId, 5);
   });
+});
+test('should keep the collection summary stable for a mixed multi-invocation round', () => {
+  const { store } = setup();
+  store.syncTasks(1, [request(1)]);
+  store.syncTasks(2, [request(2)]);
+  const [first, second] = store.readTasks();
+  const firstTask = required(first);
+  const secondTask = required(second);
+  const event = {
+    attempt: 1,
+    startedAt: 100,
+    finishedAt: 110,
+    waitMs: 20,
+    status: 500,
+    responseBytes: 5,
+    rateLimitResource: 'core',
+    rateLimitUsed: 3,
+    error: null,
+  };
+  const invocationA = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'a');
+  store.reserveActivityAttempt(firstTask.id, invocationA, 20);
+  store.saveAttempt(firstTask.id, event);
+  store.reserveActivityAttempt(firstTask.id, invocationA, 20);
+  store.saveAttempt(firstTask.id, { ...event, attempt: 2, responseBytes: 7 });
+  store.recordCollectionDuration(firstTask.id, invocationA, 40);
+  // Interrupted reservation: no event, so bytes are unknown for the group.
+  store.reserveActivityAttempt(secondTask.id, invocationA, 20);
+  const invocationB = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'b');
+  store.reserveActivityAttempt(firstTask.id, invocationB, 20);
+  store.saveAttempt(firstTask.id, { ...event, responseBytes: null });
+  store.recordCollectionDuration(firstTask.id, invocationB, 25);
+  // Candidate with a duration but no attempt in this invocation.
+  store.recordCollectionDuration(secondTask.id, invocationB, 9);
+  store.saveMetadataAttempt(invocationB, [1, 2], event);
+  store.saveCollectionStep(firstTask, step(1));
+  store.syncTasks(2, []);
+
+  const labels = new Map(
+    store
+      .readCollectionSummary()
+      .invocations.map((inv, index) => [inv.id, `invocation-${index}`]),
+  );
+  const stable = JSON.parse(
+    JSON.stringify(store.readCollectionSummary()).replace(
+      /[0-9a-f]{8}-[0-9a-f-]{27}/g,
+      (id) => labels.get(id) ?? id,
+    ),
+  );
+  expect(stable).toMatchInlineSnapshot(`
+    {
+      "activity": {
+        "activeDurationMs": 74,
+        "attempts": 4,
+        "rateLimitCost": null,
+        "responseBytes": null,
+        "retries": 1,
+        "waitMs": 60,
+      },
+      "invocations": [
+        {
+          "activity": {
+            "activeDurationMs": 0,
+            "attempts": 0,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 0,
+          },
+          "id": "invocation-0",
+          "limits": {
+            "branchesPerPage": 100,
+            "commitsPerPage": 30,
+            "maxActivityDurationMs": null,
+            "maxActivityRequestsPerCandidate": 20,
+          },
+          "metadata": {
+            "activeDurationMs": 0,
+            "attempts": 0,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 0,
+          },
+        },
+        {
+          "activity": {
+            "activeDurationMs": 40,
+            "attempts": 3,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 1,
+            "waitMs": 40,
+          },
+          "id": "invocation-1",
+          "limits": {
+            "branchesPerPage": 100,
+            "commitsPerPage": 30,
+            "maxActivityDurationMs": null,
+            "maxActivityRequestsPerCandidate": 20,
+          },
+          "metadata": {
+            "activeDurationMs": 0,
+            "attempts": 0,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 0,
+          },
+        },
+        {
+          "activity": {
+            "activeDurationMs": 34,
+            "attempts": 1,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 20,
+          },
+          "id": "invocation-2",
+          "limits": {
+            "branchesPerPage": 100,
+            "commitsPerPage": 30,
+            "maxActivityDurationMs": null,
+            "maxActivityRequestsPerCandidate": 20,
+          },
+          "metadata": {
+            "activeDurationMs": 30,
+            "attempts": 1,
+            "rateLimitCost": null,
+            "responseBytes": 5,
+            "retries": 0,
+            "waitMs": 20,
+          },
+        },
+      ],
+      "metadata": {
+        "activeDurationMs": 30,
+        "attempts": 1,
+        "rateLimitCost": null,
+        "responseBytes": 5,
+        "retries": 0,
+        "waitMs": 20,
+      },
+      "perCandidate": [
+        {
+          "activity": {
+            "activeDurationMs": 40,
+            "attempts": 2,
+            "rateLimitCost": null,
+            "responseBytes": 12,
+            "retries": 1,
+            "waitMs": 40,
+          },
+          "commitsExamined": 0,
+          "invocationId": "invocation-1",
+          "refsExamined": 0,
+          "repositoryId": 1,
+        },
+        {
+          "activity": {
+            "activeDurationMs": 0,
+            "attempts": 1,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 0,
+          },
+          "commitsExamined": 0,
+          "invocationId": "invocation-1",
+          "refsExamined": 0,
+          "repositoryId": 2,
+        },
+        {
+          "activity": {
+            "activeDurationMs": 25,
+            "attempts": 1,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 20,
+          },
+          "commitsExamined": 1,
+          "invocationId": "invocation-2",
+          "refsExamined": 1,
+          "repositoryId": 1,
+        },
+        {
+          "activity": {
+            "activeDurationMs": 9,
+            "attempts": 0,
+            "rateLimitCost": null,
+            "responseBytes": null,
+            "retries": 0,
+            "waitMs": 0,
+          },
+          "commitsExamined": 0,
+          "invocationId": "invocation-2",
+          "refsExamined": 0,
+          "repositoryId": 2,
+        },
+      ],
+      "required": {
+        "failed": 0,
+        "limited": 0,
+        "pending": 0,
+        "pendingEvaluations": 2,
+      },
+      "unknownReasons": {},
+    }
+  `);
+});
+test('should read the active duration of a candidate in one invocation like the summary does', () => {
+  const { store } = setup();
+  store.syncTasks(1, [request(1)]);
+  store.syncTasks(2, [request(2)]);
+  const firstTask = required(
+    store.readTasks().find((t) => t.repositoryId === 1),
+  );
+  const invocationA = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'a');
+  const invocationB = store.startInvocation(DEFAULT_COLLECTION_LIMITS, 'b');
+  store.recordCollectionDuration(firstTask.id, invocationA, 40);
+  store.recordCollectionDuration(firstTask.id, invocationA, 2);
+  store.recordCollectionDuration(firstTask.id, invocationB, 25);
+  // A cancelled task of the same repository still contributes its duration.
+  store.syncTasks(1, []);
+  store.recordCollectionDuration(firstTask.id, invocationA, 3);
+
+  expect(store.readActiveDuration(1, invocationA)).toBe(45);
+  expect(store.readActiveDuration(1, invocationB)).toBe(25);
+  expect(store.readActiveDuration(2, invocationA)).toBe(0);
+  for (const candidate of store.readCollectionSummary().perCandidate)
+    expect(
+      store.readActiveDuration(candidate.repositoryId, candidate.invocationId),
+    ).toBe(candidate.activity.activeDurationMs);
+});
+test('should add the per-candidate indexes to an existing database and keep its data', () => {
+  const { store, path } = setup();
+  store.syncTasks(1, [request(1)]);
+  const task = required(store.readTasks()[0]);
+  store.saveCollectionStep(task, step(1));
+  const before = store.readCandidateFacts(1);
+  store.close();
+  const indexes = [
+    'repository_observations_repository',
+    'collection_pages_task',
+    'collection_tasks_repository',
+    'collection_attempts_repository',
+  ];
+  const listIndexes = () => {
+    const db = new DatabaseSync(path, { readOnly: true });
+    const names = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+      .all()
+      .map((row) => row.name);
+    db.close();
+    return names;
+  };
+  const db = new DatabaseSync(path);
+  for (const name of indexes) db.exec(`DROP INDEX ${name}`);
+  db.close();
+  expect(listIndexes()).not.toEqual(expect.arrayContaining(indexes));
+
+  expect(() => inspectStore(path)).not.toThrow();
+  const reopened = openStore(path);
+  stores.push(reopened);
+
+  expect(listIndexes()).toEqual(expect.arrayContaining(indexes));
+  expect(reopened.readCandidateFacts(1)).toEqual(before);
 });
