@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hit, page, parseCsv, query } from '@tests/helpers.js';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { DEFAULT_COLLECTION_LIMITS } from '@/modules/discovery/collection/limits.js';
 import { evaluateProtocol } from '@/modules/discovery/eligibility/evaluate.js';
 import type { FactRequest } from '@/modules/discovery/model/facts.js';
@@ -128,7 +128,7 @@ const ELIGIBILITY_HEADINGS = [
   '## Coleta e custo',
   '## Intervalos e refs observadas',
 ];
-test('should export no eligibility columns, keys or sections for an empty protocol', async () => {
+it('should export no eligibility columns, keys or sections for an empty protocol', async () => {
   const { store, dir } = setup({ eligibility: [] });
   await exportRun(store, dir);
   const [header] = parseCsv(readFileSync(join(dir, 'candidates.csv'), 'utf8'));
@@ -157,7 +157,7 @@ test('should export no eligibility columns, keys or sections for an empty protoc
   expect(report).toContain('## Interseções entre estratégias');
   expect(report).not.toContain('not_applied');
 });
-test('should export eligibility columns, keys and sections for a protocol with rules', async () => {
+it('should export eligibility columns, keys and sections for a protocol with rules', async () => {
   const { store, dir } = setup();
   await exportRun(store, dir);
   const [header] = parseCsv(readFileSync(join(dir, 'candidates.csv'), 'utf8'));
@@ -188,7 +188,7 @@ test('should export eligibility columns, keys and sections for a protocol with r
   const report = readFileSync(join(dir, 'report.md'), 'utf8');
   for (const heading of ELIGIBILITY_HEADINGS) expect(report).toContain(heading);
 });
-test('should record auditable manifest hashes and version records', async () => {
+it('should record auditable manifest hashes and version records', async () => {
   const { store, dir } = setup({ eligibility: [] });
   const result = await exportRun(store, dir);
   const manifest = json(dir, 'manifest.json');
@@ -201,7 +201,7 @@ test('should record auditable manifest hashes and version records', async () => 
       createHash('sha256').update(readFileSync(file)).digest('hex'),
     );
 });
-test.each(['User', 'none', null] as const)(
+it.each(['User', 'none', null] as const)(
   'should export positive or complete coverage evidence and terminal unknown authors (%s)',
   async (author) => {
     const { store, dir } = setup();
@@ -231,7 +231,7 @@ test.each(['User', 'none', null] as const)(
     });
   },
 );
-test('should cover candidates, summaries, report and manifest with one snapshot during concurrent writes; stale pass re-evaluates as unknown without writes', async () => {
+it('should cover candidates, summaries, report and manifest with one snapshot during concurrent writes; stale pass re-evaluates as unknown without writes', async () => {
   const { store, dir, path } = setup();
   const f = store.readCandidateFacts(1);
   store.saveEvaluation(
@@ -263,7 +263,7 @@ test('should cover candidates, summaries, report and manifest with one snapshot 
   expect([...store.iterateCandidates()][0]).toEqual(before);
   expect(readFileSync(join(dir, 'report.md'), 'utf8')).toContain('unknown: 1');
 });
-test('should not count cancelled old reasons as current unknown reasons; recorded limits and retry costs remain exact', async () => {
+it('should not count cancelled old reasons as current unknown reasons; recorded limits and retry costs remain exact', async () => {
   const { store, dir } = setup();
   store.beginInspection(1, '2026-10-06T12:00:00Z');
   store.syncTasks(1, [
@@ -326,7 +326,7 @@ test('should not count cancelled old reasons as current unknown reasons; recorde
   expect(report).toContain('fork');
 });
 
-test('should replace a stale evaluation by decisive snapshot evidence without persistence', async () => {
+it('should replace a stale evaluation by decisive snapshot evidence without persistence', async () => {
   const { store, dir } = setup();
   activity(store, 'User');
   const candidate = required([...store.iterateCandidates()][0]);
@@ -347,7 +347,7 @@ test('should replace a stale evaluation by decisive snapshot evidence without pe
   expect(json(dir, 'coverage.json').unknownReasons).toEqual({});
 });
 
-test('should aggregate terminal authors and pending evaluations separately from task reasons', async () => {
+it('should aggregate terminal authors and pending evaluations separately from task reasons', async () => {
   const { store, dir } = setup();
   activity(store, null);
   const sub = {
@@ -377,7 +377,7 @@ test('should aggregate terminal authors and pending evaluations separately from 
   expect(c.collection.unknownReasons).toEqual({});
   expect(c.collection.required.pendingEvaluations).toBe(1);
 });
-test('should release the snapshot after a failed CSV export for a subsequent report', async () => {
+it('should release the snapshot after a failed CSV export for a subsequent report', async () => {
   const { store, dir } = setup();
   const bad = join(dir, 'bad');
   mkdirSync(join(bad, 'candidates.csv'), { recursive: true });

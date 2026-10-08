@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { hit, page, query } from '@tests/helpers.js';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { BudgetExhaustedError } from '@/modules/discovery/collection/budget.js';
 import { DEFAULT_COLLECTION_LIMITS } from '@/modules/discovery/collection/limits.js';
 import type { CollectorStep } from '@/modules/discovery/model/collection.js';
@@ -99,7 +99,7 @@ const step = (repositoryId = 1): CollectorStep => ({
   state: 'complete',
   reason: null,
 });
-test('should create a database without the enrichments table', () => {
+it('should create a database without the enrichments table', () => {
   const { path } = setup();
   const db = new DatabaseSync(path, { readOnly: true });
   const tables = db
@@ -110,7 +110,7 @@ test('should create a database without the enrichments table', () => {
   expect(tables).toEqual(expect.arrayContaining(['runs', 'queries', 'hits']));
   db.close();
 });
-test('should roundtrip document and hash and keep the inspection upper bound immutable', () => {
+it('should roundtrip document and hash and keep the inspection upper bound immutable', () => {
   const { store, path, config, run } = setup();
   store.beginInspection(1, '2026-10-06T12:00:00Z');
   store.beginInspection(1, '2026-10-07T12:00:00Z');
@@ -124,7 +124,7 @@ test('should roundtrip document and hash and keep the inspection upper bound imm
   expect(reopened.getRun()).toEqual(run);
   expect(run.catalogHash).toHaveLength(64);
 });
-test('should isolate SHAs per repository, keep facts idempotent and reject obsolete evaluations', () => {
+it('should isolate SHAs per repository, keep facts idempotent and reject obsolete evaluations', () => {
   const { store } = setup();
   for (const id of [1, 2]) {
     store.syncTasks(id, [request(id)]);
@@ -150,7 +150,7 @@ test('should isolate SHAs per repository, keep facts idempotent and reject obsol
   );
   expect([...store.iterateCandidates()][0]?.evaluation?.status).toBe('pass');
 });
-test('should reject reservation 21 across tasks and reset the budget per invocation', () => {
+it('should reject reservation 21 across tasks and reset the budget per invocation', () => {
   const { store } = setup();
   store.syncTasks(1, [
     request(),
@@ -169,7 +169,7 @@ test('should reject reservation 21 across tasks and reset the budget per invocat
   ).not.toThrow();
   expect(store.readCollectionSummary().activity.attempts).toBe(21);
 });
-test('should roll back page checkpoints and choose the first REST observation deterministically', () => {
+it('should roll back page checkpoints and choose the first REST observation deterministically', () => {
   const { store, sub } = setup();
   expect(() =>
     store.savePage(
@@ -192,7 +192,7 @@ test('should roll back page checkpoints and choose the first REST observation de
     '2025-01-01T00:00:00Z',
   );
 });
-test('should isolate a WAL read snapshot from facts written by another connection', async () => {
+it('should isolate a WAL read snapshot from facts written by another connection', async () => {
   const { store, path } = setup();
   const writer = openStore(path);
   stores.push(writer);
@@ -203,7 +203,7 @@ test('should isolate a WAL read snapshot from facts written by another connectio
   });
   expect(store.readCandidateFacts(1).inspectionUntil).toBe('now');
 });
-test('should leave an unknown or corrupt schema unchanged', () => {
+it('should leave an unknown or corrupt schema unchanged', () => {
   const { path } = setup();
   const unknown = `${path}.unknown`;
   const db = new DatabaseSync(unknown);
@@ -218,7 +218,7 @@ test('should leave an unknown or corrupt schema unchanged', () => {
   expect(readFileSync(bad, 'utf8')).toBe('broken');
 });
 
-test('should keep ref membership and exact period coverage across a roundtrip', () => {
+it('should keep ref membership and exact period coverage across a roundtrip', () => {
   const { store } = setup();
   store.syncTasks(1, [request()]);
   const task = required(store.readTasks()[0]);
@@ -236,7 +236,7 @@ test('should keep ref membership and exact period coverage across a roundtrip', 
   expect(facts.coverage[0]?.refs).toHaveLength(2);
   expect(facts.coverage[0]?.pages).toBe(1);
 });
-test('should count a metadata batch attempt once and persist activity retries and durations', () => {
+it('should count a metadata batch attempt once and persist activity retries and durations', () => {
   const { store } = setup();
   store.syncTasks(1, [request()]);
   const task = required(store.readTasks()[0]);
@@ -271,7 +271,7 @@ test('should count a metadata batch attempt once and persist activity retries an
   expect(summary.perCandidate).toHaveLength(1);
   expect(summary.required.pendingEvaluations).toBe(2);
 });
-test('should reject malformed schemas without mutation', () => {
+it('should reject malformed schemas without mutation', () => {
   const { path } = setup();
   const unknown = `${path}.shape`;
   const db = new DatabaseSync(unknown);
@@ -283,7 +283,7 @@ test('should reject malformed schemas without mutation', () => {
   expect(() => openStore(unknown)).toThrow();
   expect(readFileSync(unknown)).toEqual(before);
 });
-test('should retain successful pages on task cancellation and fail obsolete task writes atomically', () => {
+it('should retain successful pages on task cancellation and fail obsolete task writes atomically', () => {
   const { store } = setup();
   store.syncTasks(1, [request()]);
   const task = required(store.readTasks()[0]);
@@ -300,7 +300,7 @@ test('should retain successful pages on task cancellation and fail obsolete task
   expect(store.readCandidateFacts(1).revision).toBe(before);
 });
 
-test('should not change the inspection interval through a replacement collection task', () => {
+it('should not change the inspection interval through a replacement collection task', () => {
   const { store } = setup();
   store.beginInspection(1, '2026-10-06T12:00:00Z');
   expect(() =>
@@ -311,7 +311,7 @@ test('should not change the inspection interval through a replacement collection
   expect(store.readTasks()).toHaveLength(0);
 });
 
-test('should keep an interrupted reservation unknown after a crash resume and attribute completion to the new invocation', () => {
+it('should keep an interrupted reservation unknown after a crash resume and attribute completion to the new invocation', () => {
   const { store, path } = setup();
   store.syncTasks(1, [request()]);
   const task = required(store.readTasks()[0]);
@@ -362,7 +362,7 @@ test('should keep an interrupted reservation unknown after a crash resume and at
     }),
   ).toThrow(/reserved/);
 });
-test('should not initialize a run on a tableless existing database', () => {
+it('should not initialize a run on a tableless existing database', () => {
   const { path } = setup();
   const tableless = `${path}.tableless`;
   new DatabaseSync(tableless).close();
@@ -370,7 +370,7 @@ test('should not initialize a run on a tableless existing database', () => {
   expect(() => openStore(tableless)).toThrow(/incompatible format/);
   expect(readFileSync(tableless)).toEqual(bytes);
 });
-test('should summarize attempts, retries, durations and interrupted reservations per invocation', () => {
+it('should summarize attempts, retries, durations and interrupted reservations per invocation', () => {
   const { store } = setup();
   store.syncTasks(1, [request(1)]);
   store.syncTasks(2, [request(2)]);
@@ -505,7 +505,7 @@ test('should summarize attempts, retries, durations and interrupted reservations
     },
   ]);
 });
-test('should reject a snapshot opened inside another snapshot and release the outer one', async () => {
+it('should reject a snapshot opened inside another snapshot and release the outer one', async () => {
   const { store } = setup();
 
   await expect(
@@ -513,7 +513,7 @@ test('should reject a snapshot opened inside another snapshot and release the ou
   ).rejects.toThrow('Nested snapshots are unsupported');
   await expect(store.withReadSnapshot(async () => 2)).resolves.toBe(2);
 });
-test('should list candidates without a current evaluation as dirty', () => {
+it('should list candidates without a current evaluation as dirty', () => {
   const { store } = setup();
   const ids = () => store.readDirtyCandidates().map((c) => c.id);
   expect(store.readDirtyCandidates()).toEqual([
@@ -536,7 +536,7 @@ test('should list candidates without a current evaluation as dirty', () => {
   store.saveEvaluation(2, evaluation, store.readCandidateFacts(2).revision);
   expect(ids()).toEqual([]);
 });
-test('should mark a candidate dirty again after a new observation or page', () => {
+it('should mark a candidate dirty again after a new observation or page', () => {
   const { store, sub } = setup();
   const evaluation = {
     status: 'not_applied' as const,
@@ -556,7 +556,7 @@ test('should mark a candidate dirty again after a new observation or page', () =
   );
   expect(store.readDirtyCandidates().map((c) => c.id)).toEqual([2]);
 });
-test('should read completed task requests grouped by repository', () => {
+it('should read completed task requests grouped by repository', () => {
   const { store } = setup();
   for (const id of [1, 2]) store.syncTasks(id, [request(id)]);
   expect(store.readCompletedRequests().size).toBe(0);
@@ -565,7 +565,7 @@ test('should read completed task requests grouped by repository', () => {
   store.saveCollectionStep(task, step(2));
   expect([...store.readCompletedRequests()]).toEqual([[2, [request(2)]]]);
 });
-test('should count tasks by kind and state like the materialized tasks', () => {
+it('should count tasks by kind and state like the materialized tasks', () => {
   const { store } = setup();
   const metadata = (id: number): FactRequest => ({
     kind: 'repository_metadata',
@@ -597,7 +597,7 @@ test('should count tasks by kind and state like the materialized tasks', () => {
   expect(actual).toEqual(expected);
   expect(actual.get('commit_history:cancelled')).toBe(1);
 });
-test('should bump the facts revision on every change that alters evaluated facts', () => {
+it('should bump the facts revision on every change that alters evaluated facts', () => {
   const { store, run } = setup();
   const invocationId = required(run.invocations[0]).id;
   const revision = () => store.readCandidateFacts(1).revision;
@@ -628,7 +628,7 @@ test('should bump the facts revision on every change that alters evaluated facts
     store.recordCollectionDuration(task.id, invocationId, 5);
   });
 });
-test('should keep the collection summary stable for a mixed multi-invocation round', () => {
+it('should keep the collection summary stable for a mixed multi-invocation round', () => {
   const { store } = setup();
   store.syncTasks(1, [request(1)]);
   store.syncTasks(2, [request(2)]);
@@ -838,7 +838,7 @@ test('should keep the collection summary stable for a mixed multi-invocation rou
     }
   `);
 });
-test('should read the active duration of a candidate in one invocation like the summary does', () => {
+it('should read the active duration of a candidate in one invocation like the summary does', () => {
   const { store } = setup();
   store.syncTasks(1, [request(1)]);
   store.syncTasks(2, [request(2)]);
@@ -862,7 +862,7 @@ test('should read the active duration of a candidate in one invocation like the 
       store.readActiveDuration(candidate.repositoryId, candidate.invocationId),
     ).toBe(candidate.activity.activeDurationMs);
 });
-test('should add the per-candidate indexes to an existing database and keep its data', () => {
+it('should add the per-candidate indexes to an existing database and keep its data', () => {
   const { store, path } = setup();
   store.syncTasks(1, [request(1)]);
   const task = required(store.readTasks()[0]);

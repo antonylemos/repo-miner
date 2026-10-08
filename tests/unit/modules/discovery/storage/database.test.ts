@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { openConnection } from '@/modules/discovery/storage/connection.js';
 import { createDatabaseAccess } from '@/modules/discovery/storage/database.js';
 import { SCHEMA } from '@/modules/discovery/storage/schema.js';
@@ -28,7 +28,7 @@ function setup() {
   return access;
 }
 
-test('should insert a row once and report whether it changed the database', () => {
+it('should insert a row once and report whether it changed the database', () => {
   const access = setup();
 
   expect(
@@ -48,7 +48,7 @@ test('should insert a row once and report whether it changed the database', () =
   ]);
 });
 
-test.each([
+it.each([
   [
     'observations of a repository',
     'SELECT data_json FROM repository_observations WHERE repository_id = ? ORDER BY rowid',

@@ -34,7 +34,7 @@ const instantClient: ActivityClient = {
   listCommits: async () => observedPage(),
 };
 
-it('keeps the activity step cost independent of the work already collected', async () => {
+it('should keep the activity step cost independent of the work already collected', async () => {
   const { store, subqueries } = createSearchStore(
     [query({ id: 'q' })],
     '2026-10-05',

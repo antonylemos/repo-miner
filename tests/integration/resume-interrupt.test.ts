@@ -93,7 +93,7 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
-it('stops a resume within seconds during evaluation and continues where it left off', async () => {
+it('should stop a resume within seconds during evaluation and continue where it left off', async () => {
   const directory = largeRound();
 
   const first = await resumeAndInterrupt(directory);

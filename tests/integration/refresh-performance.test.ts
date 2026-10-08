@@ -46,7 +46,7 @@ function largeRound() {
   return { store, scheduler };
 }
 
-it('refreshes an unchanged round in time independent of its task count', async () => {
+it('should refresh an unchanged round in time independent of its task count', async () => {
   const { store, scheduler } = largeRound();
   await scheduler.refresh();
   expect(store.readTasks().length).toBeGreaterThanOrEqual(CANDIDATES);

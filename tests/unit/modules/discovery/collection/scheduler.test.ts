@@ -77,7 +77,7 @@ function countEvaluations(store: DiscoveryStore, onSave?: (n: number) => void) {
   return () => saved;
 }
 
-it('stops between slices when aborted, leaving the rest dirty for the next pass', async () => {
+it('should stop between slices when aborted, leaving the rest dirty for the next pass', async () => {
   const total = 1_500;
   const { store } = roundOf(total);
   const controller = new AbortController();
@@ -101,7 +101,7 @@ it('stops between slices when aborted, leaving the rest dirty for the next pass'
   store.close();
 }, 120_000);
 
-it('shares one pass between concurrent refresh calls', async () => {
+it('should share one pass between concurrent refresh calls', async () => {
   const { store } = roundOf(20);
   const saved = countEvaluations(store);
   const scheduler = schedulerFor(store);
@@ -112,7 +112,7 @@ it('shares one pass between concurrent refresh calls', async () => {
   store.close();
 });
 
-it('does not rewrite evaluations or tasks when no evidence changed', async () => {
+it('should not rewrite evaluations or tasks when no evidence changed', async () => {
   const { store } = roundOf(30);
   const scheduler = schedulerFor(store);
   await scheduler.refresh();
@@ -247,7 +247,7 @@ function outcome(store: DiscoveryStore) {
   };
 }
 
-it('stores the same tasks and evaluations as a full refresh', async () => {
+it('should store the same tasks and evaluations as a full refresh', async () => {
   const incremental = roundOf(60).store;
   const reference = roundOf(60).store;
   const scheduler = schedulerFor(incremental);
@@ -271,7 +271,7 @@ it('stores the same tasks and evaluations as a full refresh', async () => {
   reference.close();
 });
 
-it('reports evaluation progress for a large pass, ending at the total', async () => {
+it('should report evaluation progress for a large pass, ending at the total', async () => {
   const { store } = roundOf(120);
   const events: ProgressEvent[] = [];
 
@@ -289,7 +289,7 @@ it('reports evaluation progress for a large pass, ending at the total', async ()
   store.close();
 });
 
-it('stays silent for a small pass', async () => {
+it('should stay silent for a small pass', async () => {
   const { store } = roundOf(10);
   const events: ProgressEvent[] = [];
 

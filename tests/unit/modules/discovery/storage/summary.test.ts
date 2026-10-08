@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { openConnection } from '@/modules/discovery/storage/connection.js';
 import { createDatabaseAccess } from '@/modules/discovery/storage/database.js';
 import { SCHEMA } from '@/modules/discovery/storage/schema.js';
@@ -56,7 +56,7 @@ function summaryWithCandidates(count: number) {
   return { result, prepareCalls: prepare.mock.calls.length };
 }
 
-test('should not prepare more statements when the summary covers more candidates', () => {
+it('should not prepare more statements when the summary covers more candidates', () => {
   const one = summaryWithCandidates(1);
   const many = summaryWithCandidates(12);
 
