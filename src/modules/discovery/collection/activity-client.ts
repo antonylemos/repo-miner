@@ -82,7 +82,13 @@ export function createActivityClient(
       return {
         ...observation,
         items,
-        hasNext: hasNext(link, url, items.length, limits.branchesPerPage),
+        hasNext: hasNext(
+          link,
+          url,
+          target.repositoryId,
+          items.length,
+          limits.branchesPerPage,
+        ),
       };
     },
     async listCommits(target, headSha, interval, page, signal) {
@@ -118,7 +124,13 @@ export function createActivityClient(
       return {
         ...observation,
         items,
-        hasNext: hasNext(link, url, items.length, limits.commitsPerPage),
+        hasNext: hasNext(
+          link,
+          url,
+          target.repositoryId,
+          items.length,
+          limits.commitsPerPage,
+        ),
       };
     },
   };
@@ -160,6 +172,7 @@ function pageUrl(url: URL, page: number, size: number): URL {
 function hasNext(
   link: string | null,
   expected: URL,
+  repositoryId: number,
   count: number,
   size: number,
 ): boolean {
@@ -187,7 +200,9 @@ function hasNext(
       );
       if (
         received.origin !== wanted.origin ||
-        received.pathname !== wanted.pathname ||
+        (received.pathname !== wanted.pathname &&
+          received.pathname !==
+            `/repositories/${repositoryId}/${wanted.pathname.split('/').at(-1)}`) ||
         received.username ||
         received.password ||
         received.hash ||

@@ -89,6 +89,30 @@ describe('activity REST client', () => {
       Authorization: 'Bearer SECRET',
     });
   });
+  it('should accept next commit pagination by repository id', async () => {
+    const s = setup(Array.from({ length: 30 }, () => commit()));
+    await s.client.listCommits(target, sha, interval, 1, signal);
+    const next = new URL(String(s.fetchFn.mock.calls[0]?.[0]));
+    next.pathname = '/repositories/1/commits';
+    next.searchParams.set('page', '2');
+    s.fetchFn.mockResolvedValueOnce(
+      new Response(JSON.stringify(Array.from({ length: 30 }, () => commit())), {
+        headers: { link: `<${next}>; rel="next"` },
+      }),
+    );
+    const result = await s.client.listCommits(target, sha, interval, 1, signal);
+    expect(result.hasNext).toBe(true);
+    expect(result.items).toHaveLength(30);
+  });
+  it('should accept next branch pagination by repository id', async () => {
+    const s = setup(
+      [branch],
+      '<https://api.github.com/repositories/1/branches?per_page=100&page=2>; rel="next"',
+    );
+    const result = await s.client.listBranches(target, 1, signal);
+    expect(result.hasNext).toBe(true);
+    expect(result.items).toHaveLength(1);
+  });
   it.each([
     '2025-04-01T00:00:00',
     '2025-04-01T00:00:00+24:00',
@@ -170,6 +194,8 @@ describe('activity REST client', () => {
     'https://api.github.com/repos/owner/repo/branches?per_page=100&page=1',
     'https://api.github.com/repos/owner/repo/branches?per_page=100&page=3',
     'https://api.github.com/repos/owner/repo/branches?per_page=30&page=2',
+    'https://api.github.com/repositories/2/branches?per_page=100&page=2',
+    'https://api.github.com/repositories/1/commits?per_page=100&page=2',
   ])('should reject unsafe pagination %s', async (link) => {
     const s = setup([branch], `<${link}>; rel="next"`);
     await expect(s.client.listBranches(target, 1, signal)).rejects.toThrow(
