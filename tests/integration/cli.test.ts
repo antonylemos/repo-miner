@@ -180,6 +180,42 @@ describe('protocol CLI', () => {
     expect(store.readCollectionSummary().metadata.attempts).toBe(1);
     store.close();
   });
+  it('should announce the pending work on stderr before the first request of a resume', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const fetch = mockGitHub({ retry: true });
+    const running = main(
+      [...f.args, '--protocol', f.protocol, '--activity-max-requests', '1'],
+      env,
+    );
+    await vi.runAllTimersAsync();
+    expect(await running).toBe(2);
+    expect(console.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('Retomando'),
+    );
+    const store = openStore(join(f.output, 'discovery.sqlite'));
+    const subqueries = store
+      .readCoverage()
+      .filter((c) => c.state === 'pending' || c.state === 'failed').length;
+    const tasks = store
+      .readTasks()
+      .filter((t) => ['pending', 'failed', 'limited'].includes(t.state)).length;
+    store.close();
+    expect(tasks).toBeGreaterThan(0);
+    fetch.mockClear();
+    vi.mocked(console.error).mockClear();
+
+    const resumed = main(['discover', '--resume', f.output], env);
+    await vi.runAllTimersAsync();
+    await resumed;
+
+    const announcement = `Retomando: ${subqueries} subconsultas e ${tasks} tarefas pendentes.`;
+    expect(console.error).toHaveBeenCalledWith(announcement);
+    const announced = vi
+      .mocked(console.error)
+      .mock.invocationCallOrder.at(0) as number;
+    expect(fetch.mock.invocationCallOrder[0]).toBeGreaterThan(announced);
+  });
   it.each(['0', '-1', '1.2', 'NaN', 'Infinity'])(
     'should reject invalid budgets %s before creating output or HTTP',
     async (value) => {

@@ -1,5 +1,5 @@
 export type ProgressEvent = {
-  phase: 'search' | 'metadata' | 'activity';
+  phase: 'search' | 'refresh' | 'metadata' | 'activity';
   done: number;
   total: number;
   label: string;

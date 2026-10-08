@@ -124,9 +124,11 @@ export function createDiscoveryProgress(
       progress.start(
         event.phase === 'search'
           ? 'Buscando'
-          : event.phase === 'activity'
-            ? 'Coletando atividade'
-            : 'Enriquecendo',
+          : event.phase === 'refresh'
+            ? 'Avaliando'
+            : event.phase === 'activity'
+              ? 'Coletando atividade'
+              : 'Enriquecendo',
         event.total,
       );
     }

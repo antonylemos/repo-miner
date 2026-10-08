@@ -64,6 +64,11 @@ export type StoredCandidate = Candidate & {
   factsRevision: number;
   evaluationRevision: number | null;
 };
+export type TaskCount = {
+  kind: FactRequest['kind'];
+  state: CollectionTask['state'];
+  count: number;
+};
 export interface DiscoveryStore extends SearchStore {
   createRun(input: {
     config: StudyConfig;
@@ -75,11 +80,24 @@ export interface DiscoveryStore extends SearchStore {
   getRun(): Run;
   getStudyConfig(): StudyConfig;
   iterateCandidates(): Iterable<StoredCandidate>;
+  /** Lists candidates never evaluated or whose facts changed since the stored evaluation. */
+  readDirtyCandidates(): Array<{ id: number; nodeId: string }>;
   readHits(): StoredHit[];
   readCandidateFacts(repositoryId: number): CandidateFacts;
   beginInspection(repositoryId: number, until: string): void;
-  syncTasks(repositoryId: number, requests: FactRequest[]): void;
+  /** Reconciles a candidate's tasks with the requests; reports whether anything changed. */
+  syncTasks(repositoryId: number, requests: FactRequest[]): boolean;
   readTasks(): CollectionTask[];
+  /** Requests of completed tasks, grouped by repository, in one pass. */
+  readCompletedRequests(): Map<number, FactRequest[]>;
+  /** Lists unfinished tasks of one kind in task order, skipping `exclude`, at most `limit`. */
+  readOpenTasks(
+    kind: FactRequest['kind'],
+    limit: number,
+    exclude: ReadonlySet<string>,
+  ): CollectionTask[];
+  /** Counts tasks by request kind and state without materializing them. */
+  countTasks(): TaskCount[];
   saveCollectionStep(task: CollectionTask, result: CollectorStep): void;
   reserveActivityAttempt(
     taskId: string,

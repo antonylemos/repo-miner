@@ -17,6 +17,7 @@ import { createSearchData } from './search-data.js';
 type FactsMethods = Pick<
   DiscoveryStore,
   | 'iterateCandidates'
+  | 'readDirtyCandidates'
   | 'readCandidateFacts'
   | 'savePage'
   | 'beginInspection'
@@ -132,6 +133,18 @@ export function createFacts(access: DatabaseAccess): FactsMethods {
 
   return {
     iterateCandidates,
+
+    readDirtyCandidates() {
+      return all(
+        `SELECT c.repository_id, c.node_id FROM candidates c
+         LEFT JOIN evaluations e ON e.repository_id = c.repository_id
+         WHERE e.facts_revision IS NULL OR e.facts_revision <> c.facts_revision
+         ORDER BY c.repository_id`,
+      ).map((row) => ({
+        id: Number(row.repository_id),
+        nodeId: String(row.node_id),
+      }));
+    },
 
     savePage(subquery, page, result, checkpoint, fetchedAt) {
       // Rebuilds the search writer with a wrapped transaction so that search

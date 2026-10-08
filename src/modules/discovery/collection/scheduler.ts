@@ -15,6 +15,12 @@ import { BudgetExhaustedError } from './budget.js';
 
 /** GraphQL metadata requests carry at most this many repositories. */
 const METADATA_BATCH_SIZE = 100;
+/** A refresh slice runs this long before yielding the event loop. */
+const REFRESH_SLICE_MS = 25;
+/** Smaller passes finish too fast to be worth a progress bar. */
+const REFRESH_PROGRESS_MIN = 50;
+/** Re-evaluations per candidate before it is left dirty for the next pass. */
+const MAX_EVALUATION_ROUNDS = 5;
 
 export type ActivityClientFactory = (
   task: CollectionTask,
@@ -60,19 +66,15 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
   const reportProgress = (phase: 'metadata' | 'activity', label: string) => {
     const kind =
       phase === 'metadata' ? 'repository_metadata' : 'commit_history';
-    const tasks = store
-      .readTasks()
-      .filter(
-        (task) => task.request.kind === kind && task.state !== 'cancelled',
-      );
-    options.onProgress?.({
-      phase,
-      total: tasks.length,
-      done: tasks.filter((task) =>
-        ['complete', 'failed', 'limited'].includes(task.state),
-      ).length,
-      label,
-    });
+    let total = 0;
+    let done = 0;
+    for (const row of store.countTasks()) {
+      if (row.kind !== kind || row.state === 'cancelled') continue;
+      total += row.count;
+      if (['complete', 'failed', 'limited'].includes(row.state))
+        done += row.count;
+    }
+    options.onProgress?.({ phase, total, done, label });
   };
   const stopped = new Set<string>();
   const clients = new Map<string, ActivityClient>();
@@ -91,9 +93,13 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
     state,
     reason,
   });
-  const refresh = () => {
-    const protocol = store.getStudyConfig().protocol;
-    for (const candidate of store.iterateCandidates()) {
+  /** Evaluates one candidate until its derived tasks stop changing, then stores the evaluation. */
+  const evaluate = (
+    candidate: { id: number; nodeId: string },
+    protocol: ReturnType<DiscoveryStore['getStudyConfig']>['protocol'],
+    completed: ReadonlyMap<number, FactRequest[]>,
+  ) => {
+    for (let round = 0; round < MAX_EVALUATION_ROUNDS; round++) {
       let facts = store.readCandidateFacts(candidate.id);
       if (protocol.eligibility.length && facts.inspectionUntil === null) {
         store.beginInspection(candidate.id, now());
@@ -102,12 +108,7 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
       const evaluation = evaluateProtocol(protocol, facts);
       const requests: FactRequest[] = [
         ...evaluation.requests,
-        ...store
-          .readTasks()
-          .filter(
-            (t) => t.repositoryId === candidate.id && t.state === 'complete',
-          )
-          .map((t) => t.request),
+        ...(completed.get(candidate.id) ?? []),
       ];
       // Identity-bound metadata is an acquisition dependency, independently of rule policy.
       if (requests.some((r) => r.kind === 'commit_history'))
@@ -116,21 +117,47 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
           repositoryId: candidate.id,
           nodeId: candidate.nodeId,
         });
-      store.syncTasks(candidate.id, requests);
-      store.saveEvaluation(
-        candidate.id,
-        evaluation,
-        store.readCandidateFacts(candidate.id).revision,
-      );
+      // Changed tasks change the facts, so the evaluation must be recomputed.
+      if (store.syncTasks(candidate.id, requests)) continue;
+      store.saveEvaluation(candidate.id, evaluation, facts.revision);
+      return;
     }
   };
-  const pending = () =>
-    store
-      .readTasks()
-      .filter(
-        (t) =>
-          !stopped.has(t.id) && !['complete', 'cancelled'].includes(t.state),
-      );
+  let running: Promise<void> | null = null;
+  /** Re-evaluates only candidates whose facts changed, yielding the event loop between slices. */
+  const pass = async () => {
+    const protocol = store.getStudyConfig().protocol;
+    const dirty = store.readDirtyCandidates();
+    if (!dirty.length) return;
+    const completed = store.readCompletedRequests();
+    const report = (done: number) => {
+      if (dirty.length >= REFRESH_PROGRESS_MIN)
+        options.onProgress?.({
+          phase: 'refresh',
+          done,
+          total: dirty.length,
+          label: 'candidatos',
+        });
+    };
+    report(0);
+    let sliceStartedAt = performance.now();
+    for (const [index, candidate] of dirty.entries()) {
+      evaluate(candidate, protocol, completed);
+      if (index + 1 === dirty.length) report(dirty.length);
+      if (performance.now() - sliceStartedAt < REFRESH_SLICE_MS) continue;
+      report(index + 1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      // Abort is honoured between slices, so a pass always records at least one slice of work.
+      if (signal.aborted) return;
+      sliceStartedAt = performance.now();
+    }
+  };
+  const refresh = (): Promise<void> => {
+    running ??= pass().finally(() => {
+      running = null;
+    });
+    return running;
+  };
   const metadata = async (tasks: CollectionTask[]) => {
     for (const t of tasks) stopped.add(t.id);
     let results: Awaited<ReturnType<EnrichmentClient['fetchRepositories']>>;
@@ -181,7 +208,7 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
         ],
       });
     }
-    refresh();
+    await refresh();
   };
   const activity = async (task: CollectionTask) => {
     const facts = store.readCandidateFacts(task.repositoryId);
@@ -214,7 +241,7 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
         emptyStep(task, 'limited', 'duration_budget'),
       );
       stopped.add(task.id);
-      refresh();
+      await refresh();
       return;
     }
     const child = new AbortController();
@@ -259,21 +286,23 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
         Math.max(0, Date.parse(now()) - startedAt),
       );
     }
-    refresh();
+    await refresh();
   };
   const work = async () => {
-    refresh();
-    const tasks = pending();
-    const batch = tasks
-      .filter((t) => t.request.kind === 'repository_metadata')
-      .slice(0, METADATA_BATCH_SIZE);
+    await refresh();
+    if (signal.aborted) return false;
+    const batch = store.readOpenTasks(
+      'repository_metadata',
+      METADATA_BATCH_SIZE,
+      stopped,
+    );
     if (batch.length) {
       reportProgress('metadata', `lote de ${batch.length} repositórios`);
       await metadata(batch);
       reportProgress('metadata', `lote de ${batch.length} repositórios`);
       return true;
     }
-    const task = tasks.find((t) => t.request.kind === 'commit_history');
+    const [task] = store.readOpenTasks('commit_history', 1, stopped);
     if (task) {
       reportProgress('activity', `repositório ${task.repositoryId}`);
       await activity(task);
@@ -283,6 +312,7 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
     return false;
   };
   return {
+    refresh,
     wake: () => {
       generation++;
       wake();
@@ -319,7 +349,7 @@ export function createCollectionScheduler(options: CollectionSchedulerOptions) {
       }
     },
     async drain(): Promise<void> {
-      refresh();
+      await refresh();
       while (!signal.aborted && (await work())) {
         /* Persist and evaluate after each provider step. */
       }

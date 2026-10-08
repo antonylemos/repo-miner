@@ -513,3 +513,118 @@ test('should reject a snapshot opened inside another snapshot and release the ou
   ).rejects.toThrow('Nested snapshots are unsupported');
   await expect(store.withReadSnapshot(async () => 2)).resolves.toBe(2);
 });
+test('should list candidates without a current evaluation as dirty', () => {
+  const { store } = setup();
+  const ids = () => store.readDirtyCandidates().map((c) => c.id);
+  expect(store.readDirtyCandidates()).toEqual([
+    { id: 1, nodeId: 'R_1' },
+    { id: 2, nodeId: 'R_2' },
+  ]);
+
+  const evaluation = {
+    status: 'not_applied' as const,
+    rules: [],
+    requests: [],
+  };
+  store.saveEvaluation(1, evaluation, store.readCandidateFacts(1).revision);
+  expect(ids()).toEqual([2]);
+
+  store.beginInspection(1, '2026-10-06T12:00:00Z');
+  expect(ids()).toEqual([1, 2]);
+
+  store.saveEvaluation(1, evaluation, store.readCandidateFacts(1).revision);
+  store.saveEvaluation(2, evaluation, store.readCandidateFacts(2).revision);
+  expect(ids()).toEqual([]);
+});
+test('should mark a candidate dirty again after a new observation or page', () => {
+  const { store, sub } = setup();
+  const evaluation = {
+    status: 'not_applied' as const,
+    rules: [],
+    requests: [],
+  };
+  for (const id of [1, 2])
+    store.saveEvaluation(id, evaluation, store.readCandidateFacts(id).revision);
+  expect(store.readDirtyCandidates()).toEqual([]);
+
+  store.savePage(
+    sub,
+    2,
+    page([hit(2, { metadata: { pushed_at: '2026-02-02T00:00:00Z' } })]),
+    { subqueryId: 's', nextPage: null, state: 'complete' },
+    '2026-10-06T01:00:00Z',
+  );
+  expect(store.readDirtyCandidates().map((c) => c.id)).toEqual([2]);
+});
+test('should read completed task requests grouped by repository', () => {
+  const { store } = setup();
+  for (const id of [1, 2]) store.syncTasks(id, [request(id)]);
+  expect(store.readCompletedRequests().size).toBe(0);
+
+  const task = required(store.readTasks().find((t) => t.repositoryId === 2));
+  store.saveCollectionStep(task, step(2));
+  expect([...store.readCompletedRequests()]).toEqual([[2, [request(2)]]]);
+});
+test('should count tasks by kind and state like the materialized tasks', () => {
+  const { store } = setup();
+  const metadata = (id: number): FactRequest => ({
+    kind: 'repository_metadata',
+    repositoryId: id,
+    nodeId: `R_${id}`,
+  });
+  store.syncTasks(1, [request(1), metadata(1)]);
+  store.syncTasks(2, [request(2), metadata(2)]);
+  store.saveCollectionStep(
+    required(
+      store
+        .readTasks()
+        .find(
+          (t) => t.repositoryId === 1 && t.request.kind === 'commit_history',
+        ),
+    ),
+    step(1),
+  );
+  store.syncTasks(2, [metadata(2)]);
+
+  const expected = new Map<string, number>();
+  for (const task of store.readTasks()) {
+    const key = `${task.request.kind}:${task.state}`;
+    expected.set(key, (expected.get(key) ?? 0) + 1);
+  }
+  const actual = new Map(
+    store.countTasks().map((c) => [`${c.kind}:${c.state}`, c.count]),
+  );
+  expect(actual).toEqual(expected);
+  expect(actual.get('commit_history:cancelled')).toBe(1);
+});
+test('should bump the facts revision on every change that alters evaluated facts', () => {
+  const { store, run } = setup();
+  const invocationId = required(run.invocations[0]).id;
+  const revision = () => store.readCandidateFacts(1).revision;
+  const bumped = (change: () => void) => {
+    const before = revision();
+    change();
+    expect(revision()).toBeGreaterThan(before);
+  };
+  const unchanged = (change: () => void) => {
+    const before = revision();
+    change();
+    expect(revision()).toBe(before);
+  };
+
+  bumped(() => store.beginInspection(1, '2026-10-06T12:00:00Z'));
+  bumped(() => store.syncTasks(1, [request(1)]));
+  unchanged(() => store.syncTasks(1, [request(1)]));
+  const task = required(store.readTasks().find((t) => t.repositoryId === 1));
+  bumped(() => store.saveCollectionStep(task, step(1)));
+  unchanged(() => store.saveCollectionStep(task, step(1)));
+  bumped(() => store.syncTasks(1, []));
+  bumped(() => store.syncTasks(1, [request(1)]));
+  expect(
+    required(store.readTasks().find((t) => t.repositoryId === 1)).state,
+  ).toBe('pending');
+  unchanged(() => {
+    store.reserveActivityAttempt(task.id, invocationId, 20);
+    store.recordCollectionDuration(task.id, invocationId, 5);
+  });
+});

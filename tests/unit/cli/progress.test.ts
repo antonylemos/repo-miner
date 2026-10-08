@@ -85,12 +85,13 @@ it('should map search, metadata and activity progress phases', () => {
     done: vi.fn(),
   };
   const report = createDiscoveryProgress(progress);
-  for (const phase of ['search', 'metadata', 'activity'] as const)
+  for (const phase of ['search', 'refresh', 'metadata', 'activity'] as const)
     report({ phase, done: 1, total: 2, label: 'repo' });
   expect(progress.start.mock.calls).toEqual([
     ['Buscando', 2],
+    ['Avaliando', 2],
     ['Enriquecendo', 2],
     ['Coletando atividade', 2],
   ]);
-  expect(progress.update).toHaveBeenCalledTimes(3);
+  expect(progress.update).toHaveBeenCalledTimes(4);
 });

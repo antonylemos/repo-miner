@@ -1,11 +1,20 @@
 import { canonicalJson } from '@/common/canonical-json.js';
-import type { DiscoveryStore } from '@/modules/discovery/model/store.js';
+import type { FactRequest } from '@/modules/discovery/model/facts.js';
+import type {
+  DiscoveryStore,
+  TaskCount,
+} from '@/modules/discovery/model/store.js';
 import type { DatabaseAccess } from './database.js';
-import { hashOf } from './database.js';
+import { hashOf, parseJson } from './database.js';
 
 type TasksMethods = Pick<
   DiscoveryStore,
-  'syncTasks' | 'readTasks' | 'saveCollectionStep'
+  | 'syncTasks'
+  | 'readTasks'
+  | 'readCompletedRequests'
+  | 'readOpenTasks'
+  | 'countTasks'
+  | 'saveCollectionStep'
 >;
 
 /** Collection tasks, their checkpoints, and the facts each step collects. */
@@ -42,8 +51,8 @@ export function createTasks(access: DatabaseAccess): TasksMethods {
       )
         throw new Error('Activity request upper bound differs from inspection');
 
+      let changed = false;
       tx(() => {
-        let changed = false;
         const desiredIds = new Set(requests.map(hashOf));
 
         for (const task of all(
@@ -88,12 +97,52 @@ export function createTasks(access: DatabaseAccess): TasksMethods {
 
         if (changed) bumpFactsRevision(repositoryId);
       });
+      return changed;
     },
 
     readTasks() {
       return all(
         'SELECT * FROM collection_tasks ORDER BY repository_id, id',
       ).map(taskFromRow);
+    },
+
+    readCompletedRequests() {
+      const byRepository = new Map<number, FactRequest[]>();
+      for (const row of all(
+        "SELECT repository_id, request_json FROM collection_tasks WHERE state = 'complete' ORDER BY repository_id, id",
+      )) {
+        const repositoryId = Number(row.repository_id);
+        const requests = byRepository.get(repositoryId) ?? [];
+        requests.push(parseJson<FactRequest>(row.request_json));
+        byRepository.set(repositoryId, requests);
+      }
+      return byRepository;
+    },
+
+    readOpenTasks(kind, limit, exclude) {
+      // Excluded tasks may precede the wanted ones, so over-fetch by their number.
+      return all(
+        `SELECT * FROM collection_tasks
+         WHERE state NOT IN ('complete', 'cancelled')
+           AND json_extract(request_json, '$.kind') = ?
+         ORDER BY repository_id, id LIMIT ?`,
+        kind,
+        limit + exclude.size,
+      )
+        .map(taskFromRow)
+        .filter((task) => !exclude.has(task.id))
+        .slice(0, limit);
+    },
+
+    countTasks() {
+      return all(
+        `SELECT json_extract(request_json, '$.kind') AS kind, state, COUNT(*) AS n
+         FROM collection_tasks GROUP BY kind, state`,
+      ).map((row) => ({
+        kind: row.kind as TaskCount['kind'],
+        state: row.state as TaskCount['state'],
+        count: Number(row.n),
+      }));
     },
 
     saveCollectionStep(task, result) {

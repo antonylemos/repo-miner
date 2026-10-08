@@ -169,6 +169,7 @@ async function discover(
         });
       }
       const opened = store;
+      if (command.resume) announceResume(opened);
       const options = clientOptions(token, progress);
       const result = await runDiscovery({
         store: opened,
@@ -212,6 +213,20 @@ async function discover(
     progress.done();
     store?.close();
   }
+}
+
+/** Plain text on stderr, so logs read without a TTY show what the resume is about to do. */
+function announceResume(store: DiscoveryStore): void {
+  const subqueries = store
+    .readCoverage()
+    .filter((c) => c.state === 'pending' || c.state === 'failed').length;
+  const tasks = store
+    .countTasks()
+    .filter((c) => ['pending', 'failed', 'limited'].includes(c.state))
+    .reduce((sum, c) => sum + c.count, 0);
+  console.error(
+    `Retomando: ${subqueries} subconsultas e ${tasks} tarefas pendentes.`,
+  );
 }
 
 function escapeCell(text: string): string {
