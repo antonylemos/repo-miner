@@ -25,11 +25,15 @@ function endsWithLineBreak(path: string): boolean {
   }
 }
 
-async function readIds(path: string): Promise<Set<string>> {
+async function readCatalog(
+  path: string,
+): Promise<{ header: string[]; ids: Set<string> }> {
   const ids = new Set<string>();
+  let header: string[] | null = null;
   let column = -1;
   for await (const row of readCsv(path)) {
-    if (column === -1) {
+    if (header === null) {
+      header = row;
       column = row.indexOf('id');
       if (column === -1) throw new Error(`${path} has no id column.`);
       continue;
@@ -37,24 +41,36 @@ async function readIds(path: string): Promise<Set<string>> {
     const id = row[column];
     if (id !== undefined && id !== '') ids.add(id);
   }
-  return ids;
+  return { header: header ?? CATALOG_COLUMNS, ids };
 }
 
 /**
  * Appends a row with an empty `classification` for each entry whose id is not
- * in the catalog yet. Existing bytes, including filled classifications and
- * columns the researcher added, are never rewritten.
+ * in the catalog yet. Rows follow the file's own header, leaving the columns
+ * the researcher added or moved empty. Existing bytes, including filled
+ * classifications, are never rewritten.
  */
 export async function appendToCatalog(
   path: string,
   entries: CatalogEntry[],
 ): Promise<number> {
   const exists = existsSync(path) && statSync(path).size > 0;
-  const known = exists ? await readIds(path) : new Set<string>();
-  const fresh = entries.filter((entry) => !known.has(String(entry.id)));
+  const { header: columns, ids } = exists
+    ? await readCatalog(path)
+    : { header: CATALOG_COLUMNS, ids: new Set<string>() };
+  const fresh = entries.filter((entry) => !ids.has(String(entry.id)));
   if (fresh.length === 0) return 0;
   const rows = fresh
-    .map((entry) => `${csvField(entry.id)},${csvField(entry.url)},\n`)
+    .map(
+      (entry) =>
+        `${columns
+          .map((name) =>
+            csvField(
+              name === 'id' ? entry.id : name === 'url' ? entry.url : '',
+            ),
+          )
+          .join(',')}\n`,
+    )
     .join('');
   const header = exists ? '' : `${CATALOG_COLUMNS.join(',')}\n`;
   const separator = exists && !endsWithLineBreak(path) ? '\n' : '';

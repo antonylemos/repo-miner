@@ -42,7 +42,7 @@ describe('appendToCatalog', () => {
       '2,https://github.com/org/repo-2,Non-MFE,\n';
     writeFileSync(path, existing);
     await appendToCatalog(path, [entry(2), entry(3)]);
-    expect(text(path)).toBe(`${existing}3,https://github.com/org/repo-3,\n`);
+    expect(text(path)).toBe(`${existing}3,https://github.com/org/repo-3,,\n`);
   });
 
   it('should add the missing final line break before appending', async () => {
@@ -52,6 +52,15 @@ describe('appendToCatalog', () => {
     writeFileSync(path, existing);
     await appendToCatalog(path, [entry(2)]);
     expect(text(path)).toBe(`${existing}\n2,https://github.com/org/repo-2,\n`);
+  });
+
+  it('should write each value under its own column when the header was reordered', async () => {
+    const path = pathOf();
+    writeFileSync(path, 'notes,id,classification,url\n');
+    await appendToCatalog(path, [entry(7)]);
+    expect(text(path)).toBe(
+      'notes,id,classification,url\n,7,,https://github.com/org/repo-7\n',
+    );
   });
 
   it('should find the id column wherever the researcher moved it', async () => {

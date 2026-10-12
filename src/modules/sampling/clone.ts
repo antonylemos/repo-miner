@@ -4,12 +4,16 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
+  statSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { csvField, readCsv } from '@/common/csv.js';
+import { sha256File } from '@/common/hash.js';
+import { isRecord } from '@/common/records.js';
 import { appendToCatalog } from './catalog.js';
 
 const execFileAsync = promisify(execFile);
@@ -134,12 +138,47 @@ export function directoryName(fullName: string): string {
   return fullName.replace('/', '__');
 }
 
-/** Drops partial clones and clone directories that no clones.csv row vouches for. */
+/**
+ * Drops partial clones and clone directories (named `<owner>__<name>`) that no
+ * clones.csv row vouches for. Anything else in repos/ is left alone.
+ */
 function discardOrphans(reposDirectory: string, kept: Set<string>): void {
   if (!existsSync(reposDirectory)) return;
   for (const name of readdirSync(reposDirectory))
-    if (name.endsWith('.partial') || !kept.has(name))
+    if (name.endsWith('.partial') || (name.includes('__') && !kept.has(name)))
       rmSync(join(reposDirectory, name), { recursive: true, force: true });
+}
+
+/** A cloned row whose directory is gone would leave the sample short without any sign. */
+function assertClonesExist(reposDirectory: string, kept: Set<string>): void {
+  const missing = [...kept].filter(
+    (name) => !existsSync(join(reposDirectory, name)),
+  );
+  if (missing.length > 0)
+    throw new Error(
+      `clones.csv records clones missing from ${reposDirectory}: ${missing.join(', ')}. Restore the directories before running clone again.`,
+    );
+}
+
+/** The replacement order is only the drawn order if the files are the ones `sample` wrote. */
+async function assertSampleIntact(
+  manifestPath: string,
+  files: string[],
+): Promise<void> {
+  const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const recorded =
+    isRecord(manifest) && isRecord(manifest.sha256) ? manifest.sha256 : {};
+  for (const path of files) {
+    const name = path.split('/').at(-1) as string;
+    const expected = recorded[name];
+    if (typeof expected !== 'string')
+      throw new Error(`manifest.json does not record the SHA-256 of ${name}.`);
+    const actual = await sha256File(path);
+    if (actual !== expected)
+      throw new Error(
+        `${name} changed after the sample was drawn: manifest.json records ${expected}, the file has ${actual}.`,
+      );
+  }
 }
 
 export async function assertGitAvailable(run: CommandRunner): Promise<void> {
@@ -171,11 +210,13 @@ export async function cloneSample(options: CloneOptions): Promise<CloneResult> {
   const { directory, signal } = options;
   const samplePath = join(directory, 'sample.csv');
   const rankingPath = join(directory, 'ranking.csv');
-  for (const path of [samplePath, rankingPath])
+  const manifestPath = join(directory, 'manifest.json');
+  for (const path of [samplePath, rankingPath, manifestPath])
     if (!existsSync(path))
       throw new Error(
         `${directory} does not contain ${path.split('/').at(-1)}.`,
       );
+  await assertSampleIntact(manifestPath, [samplePath, rankingPath]);
   await assertGitAvailable(run);
 
   const size = (await readRows(samplePath, ['id'])).length;
@@ -197,10 +238,11 @@ export async function cloneSample(options: CloneOptions): Promise<CloneResult> {
   const byId = new Map(ranking.map((row) => [row.id, row]));
 
   mkdirSync(reposDirectory, { recursive: true });
-  discardOrphans(
-    reposDirectory,
-    new Set(cloned.map((attempt) => directoryName(attempt.fullName))),
+  const keptDirectories = new Set(
+    cloned.map((attempt) => directoryName(attempt.fullName)),
   );
+  discardOrphans(reposDirectory, keptDirectories);
+  assertClonesExist(reposDirectory, keptDirectories);
   // A crash between clones.csv and catalog.csv leaves a cloned repository out of the catalog.
   await appendToCatalog(
     catalogPath,
@@ -209,7 +251,8 @@ export async function cloneSample(options: CloneOptions): Promise<CloneResult> {
       return row ? [{ id: Number(row.id), url: row.url }] : [];
     }),
   );
-  if (!existsSync(clonesPath))
+  // An empty file (a crash right after creation) needs its header as much as a missing one.
+  if (!existsSync(clonesPath) || statSync(clonesPath).size === 0)
     appendFileSync(clonesPath, `${CLONE_COLUMNS.join(',')}\n`, 'utf8');
 
   const result: CloneResult = {

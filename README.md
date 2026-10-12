@@ -236,11 +236,13 @@ pnpm run cli clone --sample data/samples/mfe-sample-001
 | `clones.csv` | Uma linha por tentativa, só com acréscimos: `rank`, `id`, `full_name`, `status` (`cloned` ou `failed`), `commit_sha` e `branch` (o HEAD clonado, vazios em falha), `attempted_at`, `replaces` (o `id` do repositório que este substitui, vazio para os sorteados originalmente) e `error` (a mensagem do git em falha, para distinguir um 404 de um timeout). |
 | `catalog.csv` | A planilha de catalogação: `id`, `url` e `classification`, uma linha por repositório clonado, em ordem de rank. **A classificação é 100% manual:** a ferramenta nunca preenche a coluna. |
 
+**Integridade.** Antes de clonar, o `clone` confere o SHA-256 do `sample.csv` e do `ranking.csv` contra o `manifest.json` gravado pelo `sample`. Assim a ordem de substituição é sempre a do sorteio original; um arquivo editado à mão faz o comando falhar com os dois hashes na mensagem.
+
 **Retomada.** Execute `clone` de novo sobre o mesmo diretório para continuar. O estado vem do `clones.csv`: o que já está registrado (clonado ou falho) não é tentado outra vez, um diretório em `repos/` sem linha no `clones.csv` é descartado e clonado de novo, e uma amostra já completa não tenta nada. Uma falha de rede passageira conta como falha definitiva e gera substituição; repetir a tentativa ficaria fora da regra de substituição. Ctrl+C descarta o clone em andamento, sem registrá-lo, e mantém o que já foi gravado.
 
 **O `catalog.csv` só recebe acréscimos.** A ferramenta nunca reescreve o arquivo: só acrescenta linhas para `id`s que ainda não estão nele, preservando as classificações e as colunas que o pesquisador adicionar. Se o arquivo não terminar em quebra de linha (por exemplo, depois de salvar numa planilha), ela acrescenta uma antes. Ao salvar numa planilha, **mantenha vírgula como separador e UTF-8**; se o arquivo ficar ilegível, o `clone` falha com código `1` em vez de duplicar linhas.
 
-**Códigos de saída do `clone`:** `0` quando `size` repositórios estão clonados; `1` em erro de entrada ou ambiente (sem `sample.csv` ou `ranking.csv`, ou `git` ausente); `2` quando termina com menos de `size` clones (ranking esgotado ou interrupção por Ctrl+C).
+**Códigos de saída do `clone`:** `0` quando `size` repositórios estão clonados; `1` em erro de entrada ou ambiente (sem `sample.csv`, `ranking.csv` ou `manifest.json`, `git` ausente, ou um hash de `sample.csv` ou `ranking.csv` diferente do `manifest.json`); `2` quando termina com menos de `size` clones (ranking esgotado ou interrupção por Ctrl+C).
 
 ## Códigos de saída
 

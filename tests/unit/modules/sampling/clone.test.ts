@@ -15,6 +15,7 @@ import {
 } from '@tests/sampling-helpers.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { writeCsv } from '@/common/csv.js';
+import { sha256File } from '@/common/hash.js';
 import {
   type CommandRunner,
   cloneSample,
@@ -36,6 +37,15 @@ async function createSample(total: number, size: number) {
   ]);
   await writeCsv(join(directory, 'ranking.csv'), columns, rows);
   await writeCsv(join(directory, 'sample.csv'), columns, rows.slice(0, size));
+  writeFileSync(
+    join(directory, 'manifest.json'),
+    JSON.stringify({
+      sha256: {
+        'ranking.csv': await sha256File(join(directory, 'ranking.csv')),
+        'sample.csv': await sha256File(join(directory, 'sample.csv')),
+      },
+    }),
+  );
   const remotes = temporaryDirectory();
   return {
     directory,
@@ -225,6 +235,61 @@ describe('cloneSample', () => {
       '2',
       '3',
     ]);
+  });
+
+  it('should leave unrelated entries in repos/ alone', async () => {
+    const { directory, remotes, remoteUrl } = await createSample(2, 1);
+    createRemote(remotes, 'org/repo-1');
+    mkdirSync(join(directory, 'repos/notes'), { recursive: true });
+    await cloneSample({ directory, remoteUrl });
+    expect(existsSync(join(directory, 'repos/notes'))).toBe(true);
+  });
+
+  it('should fail when a recorded clone is missing from repos/', async () => {
+    const { directory, remotes, remoteUrl } = await createSample(2, 1);
+    createRemote(remotes, 'org/repo-1');
+    await cloneSample({ directory, remoteUrl });
+    rmSync(join(directory, 'repos/org__repo-1'), { recursive: true });
+    await expect(cloneSample({ directory, remoteUrl })).rejects.toThrow(
+      /org__repo-1/,
+    );
+  });
+
+  it('should write the header into an empty clones.csv', async () => {
+    const { directory, remotes, remoteUrl } = await createSample(2, 1);
+    createRemote(remotes, 'org/repo-1');
+    writeFileSync(join(directory, 'clones.csv'), '');
+    await cloneSample({ directory, remoteUrl });
+    expect(table(directory, 'clones.csv')).toHaveLength(1);
+    await expect(cloneSample({ directory, remoteUrl })).resolves.toMatchObject({
+      cloned: 1,
+    });
+  });
+
+  it.each(['ranking.csv', 'sample.csv'])(
+    'should fail with both hashes when %s changed after the draw',
+    async (file) => {
+      const { directory, remotes, remoteUrl } = await createSample(3, 2);
+      for (const n of [1, 2, 3]) createRemote(remotes, `org/repo-${n}`);
+      const path = join(directory, file);
+      const expected = await sha256File(path);
+      writeFileSync(path, `${readFileSync(path, 'utf8')}\n`);
+      const message = await cloneSample({ directory, remoteUrl }).then(
+        () => '',
+        (error: Error) => error.message,
+      );
+      expect(message).toContain(expected);
+      expect(message).toContain(await sha256File(path));
+      expect(existsSync(join(directory, 'clones.csv'))).toBe(false);
+    },
+  );
+
+  it('should fail when manifest.json is missing', async () => {
+    const { directory, remoteUrl } = await createSample(2, 1);
+    rmSync(join(directory, 'manifest.json'));
+    await expect(cloneSample({ directory, remoteUrl })).rejects.toThrow(
+      /manifest\.json/,
+    );
   });
 
   it('should fail before cloning when sample.csv is missing', async () => {
