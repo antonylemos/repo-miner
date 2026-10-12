@@ -59,6 +59,12 @@ pnpm run cli discover --resume data/discovery/rodada-001
 
 # 4. Regenerar os relatórios a partir do banco, sem token
 pnpm run cli report --run data/discovery/rodada-001
+
+# 5. Sortear uma amostra aleatória de uma rodada já exportada, sem rede nem token
+pnpm run cli sample --config config/samples/<amostra>.json --output data/samples/amostra-001
+
+# 6. Clonar a amostra para a catalogação manual (rede e git; sem token)
+pnpm run cli clone --sample data/samples/amostra-001
 ```
 
 O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`.
@@ -164,11 +170,83 @@ Os metadados originais do primeiro encontro e os hits permanecem preservados no 
 
 Cada exportação lê uma fotografia consistente do SQLite, incluindo CSV, cobertura e estado da rodada. Durante a coleta, `report` pode exportar enquanto outra conexão grava páginas; novas gravações aparecem na exportação seguinte. Enquanto o banco estiver aberto, podem existir `discovery.sqlite-wal` e `discovery.sqlite-shm`, arquivos auxiliares do modo WAL. Use no máximo um processo de descoberta gravando e um exporter ativo por diretório; evite sobrepor `report` à exportação final de `discover`.
 
+## Amostragem
+
+`sample` sorteia uma amostra aleatória simples dos candidatos de uma rodada **já exportada**. Ele lê só o `candidates.csv` da rodada, sem rede, sem `GITHUB_TOKEN` e sem abrir o `discovery.sqlite`, e não altera nenhum arquivo da rodada.
+
+```sh
+pnpm run cli sample --config config/samples/mfe-sample-001.json --output data/samples/mfe-sample-001
+```
+
+**Configuração** (`config/samples/<nome>.json`; campos desconhecidos são erro):
+
+```json
+{
+  "run": "data/discovery/mfe-round-002",
+  "filter": {
+    "eligibilityStatus": ["pass", "unknown"],
+    "excludeReasons": ["push_unavailable"]
+  },
+  "size": 380,
+  "seed": "mfe-sample-001"
+}
+```
+
+| Campo | Significado |
+| --- | --- |
+| `run` | Diretório da rodada exportada, relativo ao diretório de trabalho. Precisa ter `candidates.csv`, `coverage.json` e `manifest.json`. |
+| `size` | Tamanho X da amostra (inteiro positivo). |
+| `seed` | Texto não vazio que define o sorteio. |
+| `filter` | Opcional. `eligibilityStatus` mantém só os candidatos com esses status (`pass`, `fail`, `unknown`, `not_applied`); depois, `excludeReasons` descarta quem tem ao menos um resultado de regra com um desses motivos. Exige que o `candidates.csv` tenha as colunas de elegibilidade. |
+
+O recorte é uma decisão da análise, não do protocolo de elegibilidade. Por isso fica na configuração da amostra, e não no código nem numa nova descoberta.
+
+**Conferência da fonte, antes de sortear.** `sample` recusa a rodada (código `1`, nada gravado) quando:
+
+1. o SHA-256 do `candidates.csv` difere do registrado em `manifest.json` (por exemplo, o arquivo foi aberto e salvo numa planilha); a mensagem traz os dois hashes;
+2. as contagens recalculadas a partir das linhas diferem do `coverage.json`: o total contra `totals.uniqueCandidates`, os status contra `byEligibility` e os motivos distintos dos candidatos `unknown` contra `unknownReasons` (ignorando `pending_evaluation`).
+
+**Método de sorteio.** A população filtrada (N candidatos) é ordenada pelo SHA-256 hexadecimal de `seed + ":" + id`, em ordem crescente, com desempate pelo `id` numérico. A amostra são os `size` primeiros. O resultado depende só da seed e do conjunto de candidatos, nunca da ordem das linhas, e uma amostra menor é sempre o começo de uma maior com a mesma seed. Qualquer pessoa com o `candidates.csv`, a seed e uma implementação de SHA-256 reproduz o sorteio.
+
+**Saídas** (o diretório não pode conter `sample.csv`, `ranking.csv`, `manifest.json`, `clones.csv` nem `catalog.csv`; uma amostra existente nunca é sobrescrita):
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `ranking.csv` | A população filtrada inteira, em ordem de sorteio: `rank`, `id`, `full_name`, `url`, `strategies`, `eligibility_status`, `hash`. |
+| `sample.csv` | Os `size` primeiros do ranking, com as mesmas colunas. Os valores de `id`, `full_name`, `url`, `strategies` e `eligibility_status` são cópias do `candidates.csv` de origem, e o `id` é a chave para voltar a ele. |
+| `manifest.json` | Caminho e `run.id` da rodada, SHA-256 do `candidates.csv` e resultado das conferências, configuração e seu hash, seed, totais (`source`, `population` = N, `size` = X), exclusões por status e por motivo (`exclusions`; um candidato com dois motivos excluídos conta uma vez em cada), data de criação e SHA-256 do `ranking.csv` e do `sample.csv`. |
+
+## Clone da amostra
+
+`clone --sample <dir>` clona os repositórios de uma amostra feita por `sample` e prepara a planilha da catalogação manual. Ele exige o executável `git` no `PATH` e acesso de rede ao GitHub, mas não usa `GITHUB_TOKEN`: o clone é anônimo, com `GIT_TERMINAL_PROMPT=0`, então um repositório privado ou apagado falha sem pedir credenciais.
+
+```sh
+pnpm run cli clone --sample data/samples/mfe-sample-001
+```
+
+**Modo de clone.** Cada repositório é clonado de `https://github.com/<full_name>.git` com `git clone --filter=blob:none` em `<dir>/repos/<owner>__<name>/`. Esse modo traz o histórico de commits e as referências de todas as branches, mas só baixa os arquivos (blobs) da branch padrão; os demais chegam sob demanda, quando o repositório é usado (a primeira leitura de um arquivo de outra branch precisa de rede). O clone é sequencial e mostra o repositório atual na barra de progresso.
+
+**Substituição.** Quando um clone falha, o repositório é substituído pelo próximo do `ranking.csv` que ainda não foi tentado, até que `size` repositórios estejam clonados ou o ranking acabe. Como o ranking é a população inteira em ordem de sorteio, a amostra final continua sendo uma amostra aleatória simples dos repositórios acessíveis.
+
+**Arquivos gravados no diretório da amostra:**
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `repos/` | Um diretório por repositório clonado. Cada clone vai antes para `repos/.<owner>__<name>.partial` e só é renomeado depois de bem-sucedido. |
+| `clones.csv` | Uma linha por tentativa, só com acréscimos: `rank`, `id`, `full_name`, `status` (`cloned` ou `failed`), `commit_sha` e `branch` (o HEAD clonado, vazios em falha), `attempted_at`, `replaces` (o `id` do repositório que este substitui, vazio para os sorteados originalmente) e `error` (a mensagem do git em falha, para distinguir um 404 de um timeout). |
+| `catalog.csv` | A planilha de catalogação: `id`, `url` e `classification`, uma linha por repositório clonado, em ordem de rank. **A classificação é 100% manual:** a ferramenta nunca preenche a coluna. |
+
+**Retomada.** Execute `clone` de novo sobre o mesmo diretório para continuar. O estado vem do `clones.csv`: o que já está registrado (clonado ou falho) não é tentado outra vez, um diretório em `repos/` sem linha no `clones.csv` é descartado e clonado de novo, e uma amostra já completa não tenta nada. Uma falha de rede passageira conta como falha definitiva e gera substituição; repetir a tentativa ficaria fora da regra de substituição. Ctrl+C descarta o clone em andamento, sem registrá-lo, e mantém o que já foi gravado.
+
+**O `catalog.csv` só recebe acréscimos.** A ferramenta nunca reescreve o arquivo: só acrescenta linhas para `id`s que ainda não estão nele, preservando as classificações e as colunas que o pesquisador adicionar. Se o arquivo não terminar em quebra de linha (por exemplo, depois de salvar numa planilha), ela acrescenta uma antes. Ao salvar numa planilha, **mantenha vírgula como separador e UTF-8**; se o arquivo ficar ilegível, o `clone` falha com código `1` em vez de duplicar linhas.
+
+**Códigos de saída do `clone`:** `0` quando `size` repositórios estão clonados; `1` em erro de entrada ou ambiente (sem `sample.csv` ou `ranking.csv`, ou `git` ausente); `2` quando termina com menos de `size` clones (ranking esgotado ou interrupção por Ctrl+C).
+
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
-- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, ou falha de requisição no dry-run.
-- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados.
+- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
+- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
+- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados (ranking esgotado ou interrupção).
 
 ## Limitações
 
@@ -191,7 +269,7 @@ O catálogo [`config/catalogs/micro-frontends.json`](config/catalogs/micro-front
 
 **Decisões do estudo:**
 
-- **Protocolo de atividade** ([`config/protocols/micro-frontends.json`](config/protocols/micro-frontends.json)): exige, nesta ordem, (1) push desde 01/04/2025 (`last_push`), que filtra a busca de repositórios com `pushed:>=2025-04-01` e reprova os inativos vindos só da busca de código; e (2) commit de autor humano com `committedDate` desde a mesma data em qualquer branch existente (`recent_commit`), coletado só para quem passou no push. O catálogo mantém as mesmas 28 consultas. O critério não data a introdução da arquitetura MFE.
+- **Protocolo de atividade** ([`config/protocols/micro-frontends.json`](config/protocols/micro-frontends.json)): exige, nesta ordem, (1) push desde 01/04/2025 (`last_push`), que filtra a busca de repositórios com `pushed:>=2025-04-01` e reprova os inativos vindos só da busca de código; e (2) commit de autor humano com `committedDate` desde a mesma data na branch padrão (`recent_commit` com `branches: "default"`), coletado só para quem passou no push. O catálogo mantém as mesmas 28 consultas. O critério não data a introdução da arquitetura MFE.
 - **Pré-requisitos da rodada oficial:** árvore git limpa (para que `manifest.json` registre `git.dirty: false`), Node 26.9.0 via `fnm use` (conforme `.nvmrc`) e um dry-run com `--protocol` antes da rodada, para confirmar que nenhuma partição passa de 1.000 resultados.
 - **Partições:** termos MFE e `"module federation"` são particionados por mês de criação, porque cada termo soma entre 8 e 13 mil repositórios ativos. Consultas de código são particionadas por tamanho de arquivo, porque a busca de código não aceita datas.
 - **Termos com hífen entre aspas:** sem aspas, `single-spa` é lido como "single" e "spa" (356 mil resultados contra 6 mil com aspas).

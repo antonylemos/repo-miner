@@ -26,7 +26,7 @@ describe('configured discovery catalog', () => {
         type: 'recent_commit',
         since: '2025-04-01',
         dateField: 'committedDate',
-        branches: 'all',
+        branches: 'default',
         authors: 'human',
       },
     ]);

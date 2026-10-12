@@ -1,5 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { writeCsv } from '@/common/csv.js';
+import { sha256File } from '@/common/hash.js';
 import { evaluateProtocol } from '@/modules/discovery/eligibility/evaluate.js';
 import { hasEligibility } from '@/modules/discovery/eligibility/protocol.js';
 import { EVALUATOR_VERSIONS } from '@/modules/discovery/eligibility/registry.js';
@@ -20,11 +22,9 @@ import {
   intersections,
   type QueryCoverage,
   queryCoverage,
-  sha256File,
   strategiesByCandidate,
   strategyCounts,
   strategyLabels,
-  writeCsv,
 } from './common.js';
 
 /** Eligibility and collection keys appear only when the run's protocol has rules. */

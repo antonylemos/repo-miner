@@ -25,6 +25,9 @@ Você descreve num catálogo **o que buscar e por quê**. O repo-miner transform
                                      report.md · manifest.json · discovery.sqlite
                                                │
                                                ▼
+                                  sample (sorteio) → clone (git)
+                                               │
+                                               ▼
                                        triagem humana
 ```
 
@@ -191,9 +194,26 @@ A retomada usa o catálogo, o protocolo e as subconsultas gravados na rodada, nu
 A rodada só é considerada completa (código `0`) quando todas as subconsultas estão `complete` e nenhum trabalho de coleta necessário está pendente, com falha ou limitado. Caso contrário, ela é parcial (código `2`), e o relatório diz o que falta.
 
 
-### Etapa 9 — Depois da descoberta
+### Etapa 9 — Amostrar e clonar
 
-A descoberta entrega **candidatos**, não conclusões. Um repositório que menciona um termo, ou que declara uma dependência, ainda precisa ser examinado para saber se de fato pertence ao fenômeno. A triagem, a seleção da amostra e a mineração de artefatos são etapas posteriores, feitas por pessoas sobre estes arquivos.
+Quando a triagem é feita sobre uma amostra, e não sobre todos os candidatos, o sorteio acontece depois da exportação e antes da triagem humana. Ele parte das linhas do `candidates.csv` exportado, e não do banco, porque o CSV é a fotografia publicada da rodada, com hash, e pode ser auditada sem a ferramenta. O banco pode mudar depois da exportação (`discover --resume`), e uma amostra tirada dele teria outra população que o CSV e o `report.md` citados na pesquisa.
+
+```sh
+pnpm run cli sample --config config/samples/mfe-sample-001.json --output data/samples/mfe-sample-001
+pnpm run cli clone --sample data/samples/mfe-sample-001
+```
+
+1. **Conferir a fonte.** `sample` compara o SHA-256 do `candidates.csv` com o `manifest.json` da rodada (detecta um CSV editado ou trocado) e as contagens lidas com o `coverage.json` (detecta uma leitura errada). Se algo diverge, recusa a fonte e não grava nada.
+2. **Recortar a população.** O filtro da configuração mantém certos status de elegibilidade e descarta certos motivos (no estudo, `pass` e `unknown`, sem `push_unavailable`). O recorte é uma decisão da análise, não do protocolo, e por isso fica na configuração da amostra. As exclusões, por status e por motivo, vão para o `manifest.json` da amostra.
+3. **Sortear.** Os N candidatos restantes são ordenados pelo SHA-256 de `seed:id`, e os `size` primeiros formam a amostra. Qualquer pessoa com o CSV, a seed e uma implementação de SHA-256 refaz o sorteio e obtém a mesma lista, qualquer que seja a ordem das linhas.
+4. **Clonar.** `clone` baixa cada repositório (`git clone --filter=blob:none`), registra o commit clonado e, quando um clone falha, usa o próximo do ranking e registra a substituição. É retomável: o `clones.csv` é a fonte de verdade das tentativas.
+5. **Catalogar.** O `catalog.csv` recebe uma linha por repositório clonado. O pesquisador preenche a classificação à mão; a ferramenta só acrescenta linhas novas e nunca altera o que já foi escrito.
+
+O `id` do repositório no GitHub é a chave em todos os arquivos, então qualquer linha da amostra volta ao `candidates.csv` de origem. Detalhes de configuração, arquivos e códigos de saída estão no [README](README.md).
+
+### Etapa 10 — Depois da descoberta
+
+A descoberta entrega **candidatos**, não conclusões. Um repositório que menciona um termo, ou que declara uma dependência, ainda precisa ser examinado para saber se de fato pertence ao fenômeno. A seleção da amostra (etapa 9) é automatizada; a triagem, a classificação e a mineração de artefatos são etapas posteriores, feitas por pessoas sobre estes arquivos.
 
 Os números também têm limites claros: eles descrevem o que estas consultas encontraram nesta data, e não quantos repositórios do tema existem no GitHub.
 
@@ -246,7 +266,8 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | Caminho | Responsabilidade |
 | --- | --- |
 | `src/cli/` | Ponto de entrada. `main.ts` registra os comandos e converte erros em código de saída; `options.ts` valida as flags; `runtime.ts` traz interrupção, espera e redação do token; `commands/discover.ts` (início, retomada e dry-run) e `commands/report.ts` executam cada comando. Não conhece SQL. |
-| `src/common/` | Funções puras sem domínio (`canonicalJson`, `isIsoDate`, `isRecord`), que não importam nada de `src/`. |
+| `src/common/` | Funções sem domínio (`canonicalJson`, `isIsoDate`, `isRecord`, leitura e escrita de CSV em `csv.ts`, `sha256File` em `hash.ts`), que não importam nada de `src/`. |
+| `src/modules/sampling/` | Amostragem e clone, ligados à descoberta só pelo formato do `candidates.csv`: `config.ts` (configuração), `population.ts` (conferência da fonte e filtro), `ranking.ts` (hash e ordenação), `sample.ts` (grava a amostra), `clone.ts` (tentativas, substituição e retomada) e `catalog.ts` (acréscimos ao `catalog.csv`). `commands/sample.ts` e `commands/clone.ts` em `src/cli/` os executam. |
 | `src/modules/discovery/` | O módulo de descoberta; as linhas seguintes são suas pastas. |
 | `src/modules/discovery/study/catalog.ts` | Validação das consultas e hash canônico do catálogo. |
 | `src/modules/discovery/study/config.ts` | Catálogo e protocolo juntos: validação e plano de busca. |
@@ -317,9 +338,9 @@ pnpm run build      # compila para dist/
 
 | Código | Significado |
 | --- | --- |
-| `0` | Ajuda exibida, relatório exportado, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
-| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, ou falha de requisição no dry-run. |
-| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados. |
+| `0` | Ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
+| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `sample`, configuração inválida, fonte alterada ou divergente do `coverage.json`, `size` maior que N e diretório de saída já usado. |
+| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados. |
 
 ## Limites de interpretação
 

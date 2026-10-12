@@ -1,8 +1,10 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
+import { registerClone } from '@/cli/commands/clone.js';
 import { registerDiscover } from '@/cli/commands/discover.js';
 import { registerReport } from '@/cli/commands/report.js';
+import { registerSample } from '@/cli/commands/sample.js';
 
 export async function main(
   args: string[],
@@ -23,6 +25,10 @@ export async function main(
     actionCode = code;
   });
   registerReport(program);
+  registerSample(program);
+  registerClone(program, (code) => {
+    actionCode = code;
+  });
 
   try {
     await program.parseAsync(['node', 'repo-miner', ...args]);

@@ -1,0 +1,9 @@
+{
+  "run": "data/discovery/mfe-round-002",
+  "filter": {
+    "eligibilityStatus": ["pass", "unknown"],
+    "excludeReasons": ["push_unavailable"]
+  },
+  "size": 380,
+  "seed": "random-mfes"
+}

@@ -1,14 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  createReadStream,
-  createWriteStream,
-  existsSync,
-  readFileSync,
-} from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import type {
   Coverage,
@@ -208,31 +201,6 @@ function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-export async function sha256File(path: string): Promise<string> {
-  const hash = createHash('sha256');
-  await pipeline(createReadStream(path), hash);
-  return hash.digest('hex');
-}
-
-/** Streams rows to disk so the file size is not bounded by the maximum string length. */
-export async function writeCsv(
-  path: string,
-  columns: string[],
-  rows: Iterable<unknown[]>,
-): Promise<void> {
-  function* lines() {
-    yield `${columns.map(csvField).join(',')}\n`;
-    for (const row of rows) yield `${row.map(csvField).join(',')}\n`;
-  }
-  const iterator = lines();
-  try {
-    await pipeline(Readable.from(iterator), createWriteStream(path, 'utf8'));
-  } finally {
-    // Close nested generators and the SQLite cursor even if the destination fails.
-    iterator.return();
-  }
-}
-
 export function compareHits(left: StoredHit, right: StoredHit): number {
   return (
     left.candidate.id - right.candidate.id ||
@@ -240,11 +208,6 @@ export function compareHits(left: StoredHit, right: StoredHit): number {
     compareText(left.subqueryId, right.subqueryId) ||
     compareText(left.path ?? '', right.path ?? '')
   );
-}
-
-function csvField(value: unknown): string {
-  const text = String(value ?? '');
-  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
 function compareText(left: string, right: string): number {
