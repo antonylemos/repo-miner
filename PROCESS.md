@@ -243,9 +243,26 @@ pnpm run cli mine --config config/mining/mfe-mining-001.json --output data/minin
 
 A saída **localiza e não interpreta**: não classifica evidência, não atribui força, não relaciona unidades e não afirma que o repositório implementa o fenômeno. Uma ocorrência pode ser um falso positivo, e uma construção em várias linhas pode escapar; os números do estudo vêm do que o pesquisador confirma ao abrir o arquivo na linha indicada. Padrões novos entram em uma nova `version` do catálogo, e o corpus é minerado de novo em outro diretório. Detalhes de configuração, saídas e códigos de saída estão no [README](README.md).
 
-### Etapa 12 — Depois da descoberta
+### Etapa 12 — Listar as dependências dos manifestos
 
-A descoberta entrega **candidatos**, não conclusões. Um repositório que menciona um termo, ou que declara uma dependência, ainda precisa ser examinado para saber se de fato pertence ao fenômeno. A seleção da amostra (etapa 9), a aquisição dos snapshots (etapa 10) e a localização de artefatos (etapa 11) são automatizadas; a triagem, a classificação e a inspeção dos artefatos localizados são feitas por pessoas sobre estes arquivos.
+A busca por linha do `mine` encontra o nome de um pacote onde quer que ele apareça: num script, numa descrição ou numa dependência. Ela não separa uma coisa da outra, não registra a versão nem a seção e não liga a dependência à configuração do mesmo pacote. Fazer isso à mão, manifesto por manifesto, é mecânico e sujeito a erro. O `inspect-dependencies` faz essa parte, sem rede e sem alterar a aquisição nem a mineração.
+
+```sh
+pnpm run cli inspect-dependencies --config config/inspections/mfe-dependencies-001.json --output data/inspections/mfe-dependencies-001
+```
+
+1. **Conferir as entradas.** O comando verifica a aquisição que a mineração usou e compara os hashes com os que a mineração registrou. Se um snapshot mudou depois do `mine`, ou se falta um arquivo da mineração, ou se a configuração cita um padrão que o catálogo não tem, lista todos os problemas e não grava nada.
+2. **Ler os manifestos como JSON.** Cada `package.json` é lido, e as entradas das quatro seções de dependências cujo nome casa com os pacotes de uma tecnologia da configuração viram uma dependência, com seção, versão como escrita e linha. Um pacote citado só num script não conta. Um manifesto inválido é registrado e a execução segue.
+3. **Ligar à mineração por pacote.** O pacote de um arquivo é o diretório do `package.json` mais próximo acima dele. Para cada dependência, o comando lista as ocorrências dos padrões da tecnologia que o `mine` encontrou no mesmo pacote do manifesto e as que encontrou em outros pacotes, com arquivo e linha.
+4. **Resumir.** O `summary.csv` tem uma linha para cada par (repositório, tecnologia), inclusive os com zero dependências.
+
+**Limite: dependência vazia não é ausência da tecnologia.** Só entram pacotes declarados. Quando a tecnologia vem embutida em outra ferramenta, como o Module Federation do webpack 5, não há pacote próprio: o repositório fica sem linhas em `dependencies.csv` e com zeros no `summary.csv`, embora a configure. Esses casos só aparecem pelas ocorrências `cfg-*` da mineração, e a revisão manual deve olhar as duas saídas.
+
+**O que é automático e o que é manual.** O comando só extrai o que está declarado e registra co-localização. Ele não decide se a dependência está em uso, se está configurada de fato nem qual o papel dela na arquitetura: uma ocorrência no mesmo pacote não prova uso. Esse julgamento exige abrir o código nas linhas indicadas e é do pesquisador. As expressões regulares de pacote ficam na configuração versionada, e uma mudança nelas exige uma nova `version` e outro diretório de saída. Detalhes de configuração, saídas e códigos de saída estão no [README](README.md).
+
+### Etapa 13 — Depois da descoberta
+
+A descoberta entrega **candidatos**, não conclusões. Um repositório que menciona um termo, ou que declara uma dependência, ainda precisa ser examinado para saber se de fato pertence ao fenômeno. A seleção da amostra (etapa 9), a aquisição dos snapshots (etapa 10) a localização de artefatos (etapa 11) e a lista de dependências (etapa 12) são automatizadas; a triagem, a classificação e a inspeção dos artefatos localizados são feitas por pessoas sobre estes arquivos.
 
 Os números também têm limites claros: eles descrevem o que estas consultas encontraram nesta data, e não quantos repositórios do tema existem no GitHub.
 
@@ -302,6 +319,7 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | `src/modules/sampling/` | Amostragem e clone, ligados à descoberta só pelo formato do `candidates.csv`: `config.ts` (configuração), `population.ts` (conferência da fonte e filtro), `ranking.ts` (hash e ordenação), `sample.ts` (grava a amostra), `clone.ts` (tentativas, substituição e retomada) e `catalog.ts` (acréscimos ao `catalog.csv`). `commands/sample.ts` e `commands/clone.ts` em `src/cli/` os executam. |
 | `src/modules/acquisition/` | Aquisição dos snapshots, ligada à amostragem só pelos arquivos da amostra: `config.ts` (configuração), `annotations.ts` (front matter YAML), `selection.ts` (cruzamento e seleção), `exclusion.ts` (presets e regras), `snapshot.ts` (leitura da árvore do commit e escrita), `measures.ts` (arquivos, bytes e linguagens por extensão), `provenance.ts` (data de descoberta e metadados da rodada) e `acquire.ts` (orquestração, retomada e `acquisition.csv`). `commands/acquire.ts` em `src/cli/` o executa. |
 | `src/modules/mining/` | Mineração de artefatos, ligada à aquisição só pelo `manifest.json`, pelo `acquisition.csv` e pelos snapshots: `config.ts` (configuração e compilação das expressões regulares), `source.ts` (leitura e conferência da aquisição), `artifacts.ts` (arquivos e tipos por glob), `matching.ts` (busca linha a linha e padrões de presença), `units.ts` (unidades candidatas) e `mine.ts` (orquestração, saídas e `manifest.json`). `commands/mine.ts` em `src/cli/` o executa. O cálculo do hash de conteúdo fica em `acquisition/content-hash.ts`, compartilhado com o `acquire`. |
+| `src/modules/inspection/` | Inspeção de dependências, ligada à mineração só pelo `manifest.json`, por `matches.csv` e, por meio dela, à aquisição: `config.ts` (tecnologias), `inputs.ts` (leitura e conferência das entradas), `manifests.ts` (dependências de um `package.json`, com seção, versão e linha), `packages.ts` (pacote de um arquivo) e `inspect.ts` (ligação às ocorrências, saídas e `manifest.json`). `commands/inspect-dependencies.ts` em `src/cli/` o executa. A troca atômica da saída fica em `common/output.ts`, compartilhada com o `mine`. |
 | `src/modules/discovery/` | O módulo de descoberta; as linhas seguintes são suas pastas. |
 | `src/modules/discovery/study/catalog.ts` | Validação das consultas e hash canônico do catálogo. |
 | `src/modules/discovery/study/config.ts` | Catálogo e protocolo juntos: validação e plano de busca. |
@@ -372,8 +390,8 @@ pnpm run build      # compila para dist/
 
 | Código | Significado |
 | --- | --- |
-| `0` | Ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
-| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `sample`, configuração inválida, fonte alterada ou divergente do `coverage.json`, `size` maior que N e diretório de saída já usado. |
+| `0` | Ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine` ou pelo `inspect-dependencies`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
+| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `inspect-dependencies`, configuração inválida, mineração ou aquisição alterada depois da mineração e saída feita com outra configuração ou mineração, ou, no `sample`, configuração inválida, fonte alterada ou divergente do `coverage.json`, `size` maior que N e diretório de saída já usado. |
 | `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados; no `acquire`, algum selecionado sem snapshot (falha de leitura ou interrupção). |
 
 ## Limites de interpretação

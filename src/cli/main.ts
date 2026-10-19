@@ -4,6 +4,7 @@ import { Command, CommanderError } from 'commander';
 import { registerAcquire } from '@/cli/commands/acquire.js';
 import { registerClone } from '@/cli/commands/clone.js';
 import { registerDiscover } from '@/cli/commands/discover.js';
+import { registerInspectDependencies } from '@/cli/commands/inspect-dependencies.js';
 import { registerMine } from '@/cli/commands/mine.js';
 import { registerReport } from '@/cli/commands/report.js';
 import { registerSample } from '@/cli/commands/sample.js';
@@ -35,6 +36,7 @@ export async function main(
     actionCode = code;
   });
   registerMine(program);
+  registerInspectDependencies(program);
 
   try {
     await program.parseAsync(['node', 'repo-miner', ...args]);

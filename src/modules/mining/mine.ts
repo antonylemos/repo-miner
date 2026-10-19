@@ -4,13 +4,13 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { canonicalJson } from '@/common/canonical-json.js';
 import { writeCsv } from '@/common/csv.js';
+import { replaceOutput } from '@/common/output.js';
 import { isRecord } from '@/common/records.js';
 import { listArtifacts } from './artifacts.js';
 import { parseMiningConfig } from './config.js';
@@ -60,20 +60,6 @@ function readPrevious(outputDir: string): PreviousManifest | null {
     manifestSha256: acquisition.manifestSha256,
     acquisitionSha256: acquisition.acquisitionSha256,
   };
-}
-
-/** Replaces `outputDir` by `partial`, keeping the previous output until the new one is in place. */
-function replaceOutput(partial: string, outputDir: string): void {
-  const previous = `${outputDir}.previous`;
-  rmSync(previous, { recursive: true, force: true });
-  if (existsSync(outputDir)) renameSync(outputDir, previous);
-  try {
-    renameSync(partial, outputDir);
-  } catch (error) {
-    if (existsSync(previous)) renameSync(previous, outputDir);
-    throw error;
-  }
-  rmSync(previous, { recursive: true, force: true });
 }
 
 /**

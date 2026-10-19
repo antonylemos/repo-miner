@@ -71,6 +71,9 @@ pnpm run cli acquire --config config/acquisitions/<aquisicao>.json --output data
 
 # 8. Localizar artefatos e padrões nos snapshots adquiridos (sem rede, git nem token)
 pnpm run cli mine --config config/mining/<mineracao>.json --output data/mining/mineracao-001
+
+# 9. Listar as dependências declaradas nos manifestos, ligadas às ocorrências da mineração (sem rede, git nem token)
+pnpm run cli inspect-dependencies --config config/inspections/<inspecao>.json --output data/inspections/inspecao-001
 ```
 
 O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`.
@@ -346,10 +349,53 @@ Caminhos são ordenados por code point, não pela localidade.
 
 **Códigos de saída do `mine`:** `0` quando grava toda a saída; `1` em erro de configuração, de entrada, de integridade, de leitura ou de escrita.
 
+## Inspeção de dependências
+
+`inspect-dependencies --config <arquivo> --output <dir>` parte de uma saída do `mine` e da aquisição que ela usou. Lê cada `package.json` dos snapshots como JSON e lista as dependências dos pacotes das **tecnologias** declaradas na configuração, com manifesto, linha, seção e versão como escrita, ligadas às ocorrências da mineração no mesmo pacote e em outros. Não usa rede, `git` nem `GITHUB_TOKEN` e não altera a aquisição nem a mineração.
+
+```sh
+pnpm run cli inspect-dependencies --config config/inspections/mfe-dependencies-001.json --output data/inspections/mfe-dependencies-001
+```
+
+**O que é automático e o que é manual.** O comando extrai o que o manifesto declara e registra, por co-localização, onde a mineração achou configuração dessa tecnologia. Ele **não decide** se a dependência está em uso, se está configurada de fato ou se tem algum papel arquitetural: uma ocorrência no mesmo pacote não prova uso, e a ausência de uma não prova que não há. Esse julgamento exige ler o código e continua sendo do pesquisador.
+
+**Configuração.** As tecnologias vêm do JSON, nunca do código. Campo desconhecido, ausente ou de tipo inválido, `id` repetido, expressão regular inválida e id de padrão que não existe no catálogo da mineração terminam com código `1`, sem gravar nada.
+
+| Campo | Significado |
+| --- | --- |
+| `mining` | Diretório de saída de um `mine`. |
+| `version` | Versão da configuração, texto não vazio, declarada pelo pesquisador e alterada a cada revisão. |
+| `technologies[].id` | Identificador único da tecnologia. |
+| `technologies[].packages` | Lista não vazia de expressões regulares aplicadas ao nome do pacote, usadas como escritas (sem âncoras implícitas). |
+| `technologies[].patterns` | Lista não vazia de ids de padrões do catálogo da mineração, de qualquer tipo de artefato, cujas ocorrências são ligadas às dependências da tecnologia. |
+
+**Limite: dependência vazia não é ausência da tecnologia.** O comando só lista pacotes declarados. Uma tecnologia que vem embutida em outra ferramenta, como o Module Federation do webpack 5 (`webpack.container.ModuleFederationPlugin`), não tem pacote próprio, e o repositório fica com `dependencies.csv` só com o cabeçalho e zeros no `summary.csv`, mesmo configurando a tecnologia. Esses casos só aparecem pelas ocorrências `cfg-*` do `mine`; no piloto (`mfe-dependencies-001`), 5 dos 15 repositórios estão assim.
+
+**Integridade das entradas.** Antes de gravar, o comando verifica a aquisição que o `manifest.json` da mineração registra, como o `mine`, e confere que os SHA-256 do `manifest.json` e do `acquisition.csv` e o hash de conteúdo de cada snapshot são os que a mineração registrou, que cada repositório tem `matches.csv` e que os padrões das tecnologias existem no catálogo da mineração. Lista **todos** os problemas e termina com código `1`, sem gravar nada.
+
+**Extração.** Todo arquivo chamado `package.json` é lido. As seções `dependencies`, `devDependencies`, `peerDependencies` e `optionalDependencies` são examinadas, e cada entrada cujo nome casa com um pacote de uma tecnologia gera uma dependência por tecnologia (um pacote que casa com duas tecnologias gera duas linhas). Um pacote citado só em um script não é dependência. A versão é gravada como escrita (`^19.0.0`, `workspace:*`, `file:../shared`); um valor que não é texto é gravado em JSON canônico. A linha é a primeira, depois da que abre a seção, que contém o nome entre aspas seguido de `:`; fica vazia se não for encontrada. Um manifesto que não é JSON válido é registrado como `invalid`, sem dependências, e não interrompe a execução.
+
+**Pacote.** O pacote de um arquivo é o diretório do `package.json` mais próximo que o contém no snapshot, comparando segmentos (`app` não contém `app-2/x`); `.` é o `package.json` da raiz. Todo `package.json` conta, válido ou não. Um arquivo que nenhum `package.json` contém tem pacote vazio e não está no mesmo pacote de nenhum manifesto. Subdiretórios sem `package.json` próprio, como `src/` de um projeto Angular ou `projects/<app>/` de um workspace, pertencem ao pacote acima deles. As unidades do `units.csv` da mineração não são usadas.
+
+**Saídas em `--output`:**
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `repos/<owner>__<name>/dependencies.csv` | `manifest`, `line`, `section`, `package`, `version`, `technology`, `same_package_matches` e `other_package_matches`. As duas últimas são listas `caminho:linha` (ou só `caminho`, em ocorrência sem linha) unidas por `;`, ordenadas por caminho e linha: as ocorrências dos padrões da tecnologia no pacote do manifesto e nos demais. Ordenado por manifesto, seção, pacote e ordem das tecnologias na configuração. |
+| `repos/<owner>__<name>/manifests.csv` | `manifest` e `state` (`ok` ou `invalid`), ordenado por manifesto. |
+| `summary.csv` | Uma linha por par (repositório, tecnologia), na ordem do `acquisition.csv` e da configuração: `id`, `full_name`, `technology`, `dependencies` e `dependencies_with_same_package_matches`. Pares sem dependência aparecem com zero. |
+| `manifest.json` | A configuração, seu SHA-256, `version`, o diretório e o SHA-256 do `manifest.json` da mineração. |
+
+Caminhos são ordenados por code point, não pela localidade.
+
+**Reexecução.** Rodar de novo com o mesmo `--output`, a mesma configuração e a mesma mineração refaz toda a saída, com CSVs idênticos byte a byte. A saída é montada em `<output>.partial` e só então substitui `<output>`; uma falha deixa a saída anterior intacta. Uma configuração ou mineração diferente da registrada no `manifest.json`, ou um diretório não vazio que não seja uma saída do `inspect-dependencies`, termina com código `1` sem alterar nada: use outro diretório de saída.
+
+**Códigos de saída do `inspect-dependencies`:** `0` quando grava toda a saída; `1` em erro de configuração, de entrada, de integridade, de leitura ou de escrita.
+
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
-- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
+- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine` ou pelo `inspect-dependencies`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
+- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `inspect-dependencies`, configuração inválida, mineração ou aquisição alterada depois da mineração e saída feita com outra configuração ou mineração, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
 - `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados (ranking esgotado ou interrupção); no `acquire`, algum selecionado sem snapshot (falha de leitura ou interrupção).
 
 ## Limitações
