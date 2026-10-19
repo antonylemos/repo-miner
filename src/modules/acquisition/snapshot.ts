@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import type { Readable } from 'node:stream';
-import { canonicalJson } from '@/common/canonical-json.js';
 import { type CommandRunner, runCommand } from '@/common/command.js';
+import { contentHash } from './content-hash.js';
 import {
   binaryReason,
   type ExclusionRules,
@@ -278,13 +278,7 @@ export async function acquireSnapshot(
       languages: Object.fromEntries(
         measures.languages.map((item) => [item.language, item.bytes]),
       ),
-      contentSha256: createHash('sha256')
-        .update(
-          canonicalJson(
-            kept.map(({ path, mode, sha256 }) => ({ path, mode, sha256 })),
-          ),
-        )
-        .digest('hex'),
+      contentSha256: contentHash(kept),
     };
     writeFileSync(
       join(partial, NORMALIZATION_FILE),

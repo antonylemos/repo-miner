@@ -68,6 +68,9 @@ pnpm run cli clone --sample data/samples/amostra-001
 
 # 7. Adquirir snapshots normalizados dos repositórios anotados como finais (git local; sem rede nem token)
 pnpm run cli acquire --config config/acquisitions/<aquisicao>.json --output data/acquisitions/aquisicao-001
+
+# 8. Localizar artefatos e padrões nos snapshots adquiridos (sem rede, git nem token)
+pnpm run cli mine --config config/mining/<mineracao>.json --output data/mining/mineracao-001
 ```
 
 O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`.
@@ -301,10 +304,52 @@ Lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `poe
 
 **Códigos de saída do `acquire`:** `0` quando todos os repositórios selecionados têm snapshot; `1` em erro de configuração, de entrada ou de ambiente (anotações inconsistentes, amostra alterada, saída com outra configuração, `git` ausente ou anterior a 2.44); `2` quando termina com algum selecionado sem snapshot, por falha de leitura do commit ou por interrupção.
 
+## Mineração de artefatos
+
+`mine --config <arquivo> --output <dir>` lê uma aquisição já feita e localiza, dentro de cada snapshot, os arquivos por **tipo de artefato** e as ocorrências dos **padrões** de um catálogo. Não usa rede, `git` nem `GITHUB_TOKEN` e não altera a aquisição. A saída **localiza e não interpreta**: não classifica evidência, não atribui força, não infere relações entre unidades e não afirma que um repositório pertence ao fenômeno. É o ponto de partida da inspeção manual.
+
+```sh
+pnpm run cli mine --config config/mining/mfe-mining-001.json --output data/mining/mfe-mining-001
+```
+
+**Configuração.** Tipos de artefato e padrões vêm do JSON, nunca do código. Campo desconhecido, ausente ou de tipo inválido, `id` repetido, tipo de artefato não definido e expressão regular inválida terminam com código `1`, sem gravar nada.
+
+| Campo | Significado |
+| --- | --- |
+| `acquisition` | Diretório da aquisição (com `manifest.json`, `acquisition.csv` e `corpus/`). |
+| `version` | Versão do catálogo, texto não vazio, declarada pelo pesquisador e alterada a cada revisão. |
+| `artifactTypes` | Mapa de id para lista de globs sobre o caminho relativo a `files/`, com `/`. Um arquivo recebe **todos** os tipos cujos globs casam, ou nenhum. |
+| `patterns[].id` | Identificador único do padrão. |
+| `patterns[].artifactTypes` | Tipos de artefato em que o padrão se aplica (lista não vazia de ids definidos em `artifactTypes`). |
+| `patterns[].regex` | Expressão regular avaliada **linha a linha**. Sem ela, o padrão é de presença: uma ocorrência por arquivo dos seus tipos, sem linha nem trecho. |
+| `patterns[].ignoreCase` | Ignora maiúsculas e minúsculas; padrão `false`. |
+| `patterns[].rationale` | Justificativa curta, obrigatória. |
+| `units.artifactTypes` | Tipos cujos arquivos marcam uma unidade candidata. |
+
+**Integridade da aquisição.** Antes de gravar, o comando confere, para cada linha do `acquisition.csv`, que o snapshot existe, que o `contentSha256` do `normalization.json` é igual ao `content_sha256` da linha e que o hash recalculado dos arquivos de `files/` é igual a ambos (caminho, bit de execução e SHA-256 de cada arquivo). Lista **todos** os problemas e termina com código `1`, sem gravar nada.
+
+**Busca.** Cada arquivo é lido como UTF-8 (caracteres inválidos são substituídos) e dividido em linhas, sem `\r`. Uma linha gera no máximo uma ocorrência por padrão, com o trecho limitado a 300 caracteres. Não há análise sintática, busca em várias linhas nem resolução de imports: um padrão deve casar com a linha onde a construção começa. As **unidades candidatas** são os diretórios que contêm diretamente um arquivo com tipo de `units.artifactTypes` (a raiz é `.`).
+
+**Saídas em `--output`:**
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `repos/<owner>__<name>/artifacts.csv` | Todos os arquivos do snapshot: `path`, `artifact_types` (ids unidos por `;`, na ordem da configuração) e `bytes`. |
+| `repos/<owner>__<name>/matches.csv` | `pattern`, `path`, `line` e `excerpt`, na ordem do catálogo, caminho e linha; `line` e `excerpt` vazios nos padrões de presença. |
+| `repos/<owner>__<name>/units.csv` | `directory` e `markers` (caminhos unidos por `;`). |
+| `summary.csv` | Uma linha por par (repositório, padrão), na ordem do `acquisition.csv` e do catálogo: `id`, `full_name`, `pattern`, `matches` e `files`. Pares sem ocorrência aparecem com zero, para que a ausência fique registrada. |
+| `manifest.json` | A configuração, seu SHA-256, `version`, os SHA-256 do `manifest.json` e do `acquisition.csv` da aquisição e o hash de conteúdo de cada snapshot. |
+
+Caminhos são ordenados por code point, não pela localidade.
+
+**Reexecução.** Rodar de novo com o mesmo `--output`, a mesma configuração e a mesma aquisição refaz toda a saída, com CSVs idênticos byte a byte. A saída é montada em `<output>.partial` e só então substitui `<output>`; uma falha deixa a saída anterior intacta. Uma configuração ou aquisição diferente da registrada no `manifest.json`, ou um diretório não vazio que não seja uma saída do `mine`, termina com código `1` sem alterar nada: use outro diretório de saída.
+
+**Códigos de saída do `mine`:** `0` quando grava toda a saída; `1` em erro de configuração, de entrada, de integridade, de leitura ou de escrita.
+
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
-- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
+- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
+- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
 - `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados (ranking esgotado ou interrupção); no `acquire`, algum selecionado sem snapshot (falha de leitura ou interrupção).
 
 ## Limitações
