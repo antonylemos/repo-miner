@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Command, CommanderError } from 'commander';
+import { registerAcquire } from '@/cli/commands/acquire.js';
 import { registerClone } from '@/cli/commands/clone.js';
 import { registerDiscover } from '@/cli/commands/discover.js';
 import { registerReport } from '@/cli/commands/report.js';
@@ -27,6 +28,9 @@ export async function main(
   registerReport(program);
   registerSample(program);
   registerClone(program, (code) => {
+    actionCode = code;
+  });
+  registerAcquire(program, (code) => {
     actionCode = code;
   });
 

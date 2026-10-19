@@ -14,13 +14,10 @@ import {
   temporaryDirectory,
 } from '@tests/sampling-helpers.js';
 import { afterEach, describe, expect, it } from 'vitest';
+import { type CommandRunner, runCommand } from '@/common/command.js';
 import { writeCsv } from '@/common/csv.js';
 import { sha256File } from '@/common/hash.js';
-import {
-  type CommandRunner,
-  cloneSample,
-  runCommand,
-} from '@/modules/sampling/clone.js';
+import { cloneSample } from '@/modules/sampling/clone.js';
 
 afterEach(removeTemporaryDirectories);
 

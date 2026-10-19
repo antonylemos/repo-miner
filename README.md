@@ -65,6 +65,9 @@ pnpm run cli sample --config config/samples/<amostra>.json --output data/samples
 
 # 6. Clonar a amostra para a catalogação manual (rede e git; sem token)
 pnpm run cli clone --sample data/samples/amostra-001
+
+# 7. Adquirir snapshots normalizados dos repositórios anotados como finais (git local; sem rede nem token)
+pnpm run cli acquire --config config/acquisitions/<aquisicao>.json --output data/acquisitions/aquisicao-001
 ```
 
 O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`.
@@ -244,11 +247,65 @@ pnpm run cli clone --sample data/samples/mfe-sample-001
 
 **Códigos de saída do `clone`:** `0` quando `size` repositórios estão clonados; `1` em erro de entrada ou ambiente (sem `sample.csv`, `ranking.csv` ou `manifest.json`, `git` ausente, ou um hash de `sample.csv` ou `ranking.csv` diferente do `manifest.json`); `2` quando termina com menos de `size` clones (ranking esgotado ou interrupção por Ctrl+C).
 
+## Aquisição dos snapshots
+
+`acquire --config <arquivo> --output <dir>` parte de uma amostra já clonada e das anotações do pesquisador e grava, para cada repositório selecionado, um **snapshot normalizado**: os arquivos da árvore do commit classificado, menos o que as regras de normalização removem, com o registro do que foi removido e por quê. Ele exige o executável `git` 2.44 ou mais novo no `PATH`; não usa rede nem `GITHUB_TOKEN` e não altera a amostra, os clones nem as anotações.
+
+```sh
+pnpm run cli acquire --config config/acquisitions/mfe-corpus-001.json --output data/acquisitions/mfe-corpus-001
+```
+
+**Configuração.** O JSON declara tudo o que depende do estudo; o código não conhece classificações, estados nem nomes de campos. Os caminhos são relativos ao diretório de trabalho. Campo desconhecido, tipo inválido ou preset inexistente terminam com código `1`, sem gravar nada.
+
+| Campo | Significado |
+| --- | --- |
+| `sample` | Diretório da amostra (com `sample.csv`, `ranking.csv`, `clones.csv`, `catalog.csv`, `manifest.json` e `repos/`). |
+| `include.classification`, `include.status` | Valores aceitos da `classification` e do estado da anotação. Só as anotações que casam nos dois são adquiridas. |
+| `annotations.files` | Padrão glob dos arquivos de anotação (Markdown com front matter YAML). |
+| `annotations.statusField` | Onde fica o estado; padrão `annotation.status`. Caminhos com ponto leem mapas aninhados. |
+| `annotations.required` | Campos que toda anotação selecionada deve ter: existir, não ser `null` e, se for lista, não ser vazia. |
+| `annotations.export` | Campos da anotação copiados para colunas do `acquisition.csv` (listas unidas por `;`, mapas em JSON, `null` vazio). |
+| `exclude.presets` | Presets de exclusão (abaixo). |
+| `exclude.paths` | Padrões glob extras sobre o caminho com `/` (por exemplo `**/*.min.js`). |
+| `exclude.maxFileBytes` | Remove arquivos maiores que esse tamanho. |
+
+**Anotações.** Cada arquivo precisa de front matter entre `---` com `schema: 1`, `id`, `full_name`, `commit` (SHA de 40 caracteres), `classification` e o campo de estado. O YAML é lido em YAML 1.2, em que `yes` e `no` são texto. O corpo Markdown e o significado dos valores não são interpretados.
+
+**Validação antes de gravar.** O comando confere o SHA-256 do `sample.csv` e do `ranking.csv` contra o `manifest.json` da amostra e cruza as anotações com `clones.csv` (só `cloned`) e `catalog.csv`. Recusa a execução, listando **todos** os problemas e sem criar arquivos em `--output`, quando há `id` duplicado ou fora da amostra, `full_name` ou `commit` diferentes do `clones.csv`, classificação diferente da do `catalog.csv`, classificação vazia no catálogo para um `id` anotado, classificação incluída no catálogo sem anotação, ou campo obrigatório ausente, nulo ou vazio.
+
+**Snapshot.** O commit é o `commit_sha` do `clones.csv`, o mesmo avaliado na classificação, e não a branch em checkout nem a última release. Os arquivos são lidos do banco de objetos do clone (`git ls-tree` e `git cat-file`) com `GIT_NO_LAZY_FETCH=1`: um conteúdo que falta no clone parcial faz o snapshot falhar, nunca uma busca na rede. Submódulos e links simbólicos não são seguidos: ficam registrados no `normalization.json` com o commit ou o alvo.
+
+**Presets de exclusão.** Decididos por segmento de diretório do caminho e por extensão:
+
+| Preset | Remove |
+| --- | --- |
+| `node` | `node_modules`, `bower_components`, `.pnpm-store`, `.yarn/cache` |
+| `python` | `.venv`, `venv`, `__pycache__`, `.tox` e arquivos `*.pyc` |
+| `build-output` | `dist`, `build`, `out`, `.next`, `.nuxt`, `.output`, `.angular`, `.svelte-kit`, `.turbo`, `.cache`, `coverage` |
+| `binaries` | extensões de imagem, mídia, fonte, arquivo compactado e executável, e qualquer arquivo com byte NUL nos primeiros 8 KB |
+
+Lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `poetry.lock`, `Cargo.lock` e outros) nunca são removidos por um preset, porque a mineração de artefatos os usa. Um diretório `build/` que seja código-fonte pode ser preservado trocando o preset por padrões explícitos em `exclude.paths`; como isso muda a configuração, exige um novo diretório de saída.
+
+**Saídas em `--output`:**
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `corpus/<owner>__<name>/files/` | Os arquivos mantidos do snapshot. |
+| `corpus/<owner>__<name>/normalization.json` | `id`, commit, data de aquisição, regras efetivas, caminhos removidos com motivo e tamanho (`preset:<nome>`, `path:<padrão>`, `max-file-bytes`), submódulos e links simbólicos, arquivos e bytes mantidos, bytes por linguagem e o `contentSha256`, hash do conteúdo adquirido que não depende da ordem de leitura nem do sistema de arquivos. |
+| `acquisition.csv` | Uma linha por repositório adquirido, em ordem de rank: `id`, `full_name`, `url`, `commit_sha`, `default_branch`, `discovered_at` (menor `fetched_at` do repositório no `discovery-hits.csv` da rodada de origem), `acquired_at`, `strategies`, `discovery_language` e `discovery_size_kb` (vazios quando a descoberta não os registrou, como nos achados só pela busca de código), `files`, `bytes`, `languages_by_extension`, `content_sha256` e os campos de `annotations.export`. É regravado inteiro a cada execução. |
+| `manifest.json` | SHA-256 canônico da configuração, hashes do `sample.csv` e do `ranking.csv`, SHA-256 do arquivo de anotação lido por repositório adquirido e os repositórios que deixaram de ser selecionados. |
+
+**Linguagens por extensão.** `languages_by_extension` soma os bytes por extensão de arquivo (`.ts` e `.tsx` são TypeScript, `.vue` é Vue, e assim por diante; o que não está no mapa vai para `Other`). É uma **aproximação**, não uma detecção por conteúdo, e é independente da linguagem que o GitHub registrou na descoberta (`discovery_language`).
+
+**Retomada e reprodutibilidade.** Rodar de novo sobre o mesmo `--output` mantém os snapshots completos (diretório com `normalization.json`), descarta os `.partial` e adquire só os que faltam, em ordem de rank. Uma configuração ou amostra diferente da registrada no `manifest.json` termina com código `1` sem alterar nada: use outro diretório de saída. Um repositório já adquirido que deixa de ser selecionado (por exemplo, uma anotação reaberta para `review`) mantém o snapshot no disco, sai do `acquisition.csv`, entra na lista de não selecionados do `manifest.json` e é avisado na saída. Ctrl+C descarta o snapshot em andamento e mantém os completos.
+
+**Códigos de saída do `acquire`:** `0` quando todos os repositórios selecionados têm snapshot; `1` em erro de configuração, de entrada ou de ambiente (anotações inconsistentes, amostra alterada, saída com outra configuração, `git` ausente ou anterior a 2.44); `2` quando termina com algum selecionado sem snapshot, por falha de leitura do commit ou por interrupção.
+
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
-- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
-- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados (ranking esgotado ou interrupção).
+- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
+- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
+- `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados (ranking esgotado ou interrupção); no `acquire`, algum selecionado sem snapshot (falha de leitura ou interrupção).
 
 ## Limitações
 

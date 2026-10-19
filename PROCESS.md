@@ -211,9 +211,25 @@ pnpm run cli clone --sample data/samples/mfe-sample-001
 
 O `id` do repositório no GitHub é a chave em todos os arquivos, então qualquer linha da amostra volta ao `candidates.csv` de origem. Detalhes de configuração, arquivos e códigos de saída estão no [README](README.md).
 
-### Etapa 10 — Depois da descoberta
+### Etapa 10 — Adquirir os snapshots
 
-A descoberta entrega **candidatos**, não conclusões. Um repositório que menciona um termo, ou que declara uma dependência, ainda precisa ser examinado para saber se de fato pertence ao fenômeno. A seleção da amostra (etapa 9) é automatizada; a triagem, a classificação e a mineração de artefatos são etapas posteriores, feitas por pessoas sobre estes arquivos.
+Depois da triagem, os repositórios classificados e com a anotação em estado final seguem para a aquisição. O objetivo é ter, para cada um, uma versão fixa do código, livre de material irrelevante, com a proveniência registrada, sem depender de rede.
+
+```sh
+pnpm run cli acquire --config config/acquisitions/mfe-corpus-001.json --output data/acquisitions/mfe-corpus-001
+```
+
+1. **Validar antes de gravar.** `acquire` confere os hashes da amostra e cruza as anotações com o `clones.csv` e o `catalog.csv`: `id`, `full_name`, commit e classificação precisam concordar, e os campos obrigatórios da configuração precisam estar preenchidos. Se algo diverge, lista todos os problemas e não grava nada.
+2. **Selecionar.** Entram os repositórios cuja classificação e cujo estado da anotação estão na configuração. Os valores vêm da configuração, não do código.
+3. **Fixar o commit.** O snapshot é a árvore do `commit_sha` do `clones.csv`, o mesmo commit que o pesquisador classificou, lida do banco de objetos do clone, sem rede. O clone bruto, com `.git`, continua intacto para a mineração histórica.
+4. **Normalizar.** As regras da configuração removem dependências instaladas, saída de build, binários e o que mais o estudo declarar; lockfiles ficam. Cada snapshot ganha um `normalization.json` com as regras, cada caminho removido e seu motivo e o hash do conteúdo adquirido, o que permite auditar e reproduzir a aquisição.
+5. **Consolidar.** O `acquisition.csv` reúne a proveniência (URL, commit, branch, data de descoberta e de aquisição, estratégias), os metadados da descoberta quando existem, as medidas do snapshot e os campos anotados pelo pesquisador.
+
+A execução é incremental e retomável: uma anotação que passa a `final` gera só o snapshot novo, e uma configuração diferente exige outro diretório de saída. Detalhes de configuração, presets, saídas e códigos de saída estão no [README](README.md).
+
+### Etapa 11 — Depois da descoberta
+
+A descoberta entrega **candidatos**, não conclusões. Um repositório que menciona um termo, ou que declara uma dependência, ainda precisa ser examinado para saber se de fato pertence ao fenômeno. A seleção da amostra (etapa 9) e a aquisição dos snapshots (etapa 10) são automatizadas; a triagem, a classificação e a mineração de artefatos são feitas por pessoas sobre estes arquivos.
 
 Os números também têm limites claros: eles descrevem o que estas consultas encontraram nesta data, e não quantos repositórios do tema existem no GitHub.
 
@@ -268,6 +284,7 @@ O catálogo `config/catalogs/micro-frontends.json` contém esta consulta:
 | `src/cli/` | Ponto de entrada. `main.ts` registra os comandos e converte erros em código de saída; `options.ts` valida as flags; `runtime.ts` traz interrupção, espera e redação do token; `commands/discover.ts` (início, retomada e dry-run) e `commands/report.ts` executam cada comando. Não conhece SQL. |
 | `src/common/` | Funções sem domínio (`canonicalJson`, `isIsoDate`, `isRecord`, leitura e escrita de CSV em `csv.ts`, `sha256File` em `hash.ts`), que não importam nada de `src/`. |
 | `src/modules/sampling/` | Amostragem e clone, ligados à descoberta só pelo formato do `candidates.csv`: `config.ts` (configuração), `population.ts` (conferência da fonte e filtro), `ranking.ts` (hash e ordenação), `sample.ts` (grava a amostra), `clone.ts` (tentativas, substituição e retomada) e `catalog.ts` (acréscimos ao `catalog.csv`). `commands/sample.ts` e `commands/clone.ts` em `src/cli/` os executam. |
+| `src/modules/acquisition/` | Aquisição dos snapshots, ligada à amostragem só pelos arquivos da amostra: `config.ts` (configuração), `annotations.ts` (front matter YAML), `selection.ts` (cruzamento e seleção), `exclusion.ts` (presets e regras), `snapshot.ts` (leitura da árvore do commit e escrita), `measures.ts` (arquivos, bytes e linguagens por extensão), `provenance.ts` (data de descoberta e metadados da rodada) e `acquire.ts` (orquestração, retomada e `acquisition.csv`). `commands/acquire.ts` em `src/cli/` o executa. |
 | `src/modules/discovery/` | O módulo de descoberta; as linhas seguintes são suas pastas. |
 | `src/modules/discovery/study/catalog.ts` | Validação das consultas e hash canônico do catálogo. |
 | `src/modules/discovery/study/config.ts` | Catálogo e protocolo juntos: validação e plano de busca. |
@@ -338,9 +355,9 @@ pnpm run build      # compila para dist/
 
 | Código | Significado |
 | --- | --- |
-| `0` | Ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
-| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `sample`, configuração inválida, fonte alterada ou divergente do `coverage.json`, `size` maior que N e diretório de saída já usado. |
-| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados. |
+| `0` | Ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com todas as subconsultas `complete` e nenhum trabalho de coleta necessário pendente, com falha ou limitado. |
+| `1` | Erro fatal: opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `sample`, configuração inválida, fonte alterada ou divergente do `coverage.json`, `size` maior que N e diretório de saída já usado. |
+| `2` | Rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados; no `acquire`, algum selecionado sem snapshot (falha de leitura ou interrupção). |
 
 ## Limites de interpretação
 

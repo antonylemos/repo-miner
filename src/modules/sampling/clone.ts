@@ -1,22 +1,17 @@
-import { execFile } from 'node:child_process';
 import {
   appendFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
   renameSync,
   rmSync,
   statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
-import { csvField, readCsv } from '@/common/csv.js';
-import { sha256File } from '@/common/hash.js';
-import { isRecord } from '@/common/records.js';
+import { type CommandRunner, runCommand } from '@/common/command.js';
+import { csvField, readCsvRecords } from '@/common/csv.js';
 import { appendToCatalog } from './catalog.js';
-
-const execFileAsync = promisify(execFile);
+import { assertSampleIntact } from './integrity.js';
 
 export const CLONE_COLUMNS = [
   'rank',
@@ -30,32 +25,6 @@ export const CLONE_COLUMNS = [
   'error',
 ];
 const MAX_ERROR_LENGTH = 500;
-
-/** Runs a command and returns its stdout; rejects with the command's stderr in the message. */
-export type CommandRunner = (
-  file: string,
-  args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal },
-) => Promise<string>;
-
-export const runCommand: CommandRunner = async (file, args, options) => {
-  try {
-    const { stdout } = await execFileAsync(file, args, {
-      cwd: options.cwd,
-      env: { ...process.env, ...options.env },
-      signal: options.signal,
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    return stdout;
-  } catch (error) {
-    const stderr = (error as { stderr?: string }).stderr?.trim();
-    const failure = new Error(
-      stderr || (error instanceof Error ? error.message : String(error)),
-    );
-    failure.name = (error as Error).name;
-    throw failure;
-  }
-};
 
 export type CloneOptions = {
   /** Sample directory holding sample.csv and ranking.csv. */
@@ -86,30 +55,8 @@ type Attempt = {
   replaces: string;
 };
 
-async function readRows(
-  path: string,
-  columns: string[],
-): Promise<Array<Record<string, string>>> {
-  const rows: Array<Record<string, string>> = [];
-  let header: string[] | null = null;
-  for await (const row of readCsv(path)) {
-    if (header === null) {
-      header = row;
-      const missing = columns.filter((name) => !header?.includes(name));
-      if (missing.length > 0)
-        throw new Error(`${path} lacks the columns ${missing.join(', ')}.`);
-      continue;
-    }
-    if (row.length === 1 && row[0] === '') continue;
-    rows.push(
-      Object.fromEntries(header.map((name, index) => [name, row[index] ?? ''])),
-    );
-  }
-  return rows;
-}
-
 async function readRanking(directory: string): Promise<RankedRow[]> {
-  const rows = await readRows(join(directory, 'ranking.csv'), [
+  const rows = await readCsvRecords(join(directory, 'ranking.csv'), [
     'rank',
     'id',
     'full_name',
@@ -125,7 +72,12 @@ async function readRanking(directory: string): Promise<RankedRow[]> {
 
 async function readAttempts(path: string): Promise<Attempt[]> {
   if (!existsSync(path)) return [];
-  const rows = await readRows(path, ['id', 'full_name', 'status', 'replaces']);
+  const rows = await readCsvRecords(path, [
+    'id',
+    'full_name',
+    'status',
+    'replaces',
+  ]);
   return rows.map((row) => ({
     id: row.id as string,
     status: row.status as string,
@@ -158,27 +110,6 @@ function assertClonesExist(reposDirectory: string, kept: Set<string>): void {
     throw new Error(
       `clones.csv records clones missing from ${reposDirectory}: ${missing.join(', ')}. Restore the directories before running clone again.`,
     );
-}
-
-/** The replacement order is only the drawn order if the files are the ones `sample` wrote. */
-async function assertSampleIntact(
-  manifestPath: string,
-  files: string[],
-): Promise<void> {
-  const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-  const recorded =
-    isRecord(manifest) && isRecord(manifest.sha256) ? manifest.sha256 : {};
-  for (const path of files) {
-    const name = path.split('/').at(-1) as string;
-    const expected = recorded[name];
-    if (typeof expected !== 'string')
-      throw new Error(`manifest.json does not record the SHA-256 of ${name}.`);
-    const actual = await sha256File(path);
-    if (actual !== expected)
-      throw new Error(
-        `${name} changed after the sample was drawn: manifest.json records ${expected}, the file has ${actual}.`,
-      );
-  }
 }
 
 export async function assertGitAvailable(run: CommandRunner): Promise<void> {
@@ -219,7 +150,7 @@ export async function cloneSample(options: CloneOptions): Promise<CloneResult> {
   await assertSampleIntact(manifestPath, [samplePath, rankingPath]);
   await assertGitAvailable(run);
 
-  const size = (await readRows(samplePath, ['id'])).length;
+  const size = (await readCsvRecords(samplePath, ['id'])).length;
   const ranking = await readRanking(directory);
   const clonesPath = join(directory, 'clones.csv');
   const catalogPath = join(directory, 'catalog.csv');

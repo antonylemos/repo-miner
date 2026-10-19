@@ -1,0 +1,32 @@
+{
+  "sample": "data/samples/mfe-sample-001",
+  "include": {
+    "classification": ["MFE-implemented"],
+    "status": ["final"]
+  },
+  "annotations": {
+    "files": "docs/mfe-classification/[0-9]*.md",
+    "statusField": "annotation.status",
+    "required": [
+      "approaches",
+      "ui_technologies",
+      "frontend_units",
+      "repo_type"
+    ],
+    "export": [
+      "classification",
+      "repo_type",
+      "approaches",
+      "ui_technologies",
+      "build_tools",
+      "frontend_units",
+      "unit_organization",
+      "annotation.method"
+    ]
+  },
+  "exclude": {
+    "presets": ["node", "python", "build-output", "binaries"],
+    "paths": ["**/*.min.js"],
+    "maxFileBytes": 5242880
+  }
+}

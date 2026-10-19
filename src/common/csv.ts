@@ -84,3 +84,26 @@ export async function* readCsv(path: string): AsyncGenerator<string[]> {
     yield row;
   }
 }
+
+/** Reads a CSV file with a header into one record per row, requiring the given columns. */
+export async function readCsvRecords(
+  path: string,
+  columns: string[] = [],
+): Promise<Array<Record<string, string>>> {
+  const rows: Array<Record<string, string>> = [];
+  let header: string[] | null = null;
+  for await (const row of readCsv(path)) {
+    if (header === null) {
+      header = row;
+      const missing = columns.filter((name) => !header?.includes(name));
+      if (missing.length > 0)
+        throw new Error(`${path} lacks the columns ${missing.join(', ')}.`);
+      continue;
+    }
+    if (row.length === 1 && row[0] === '') continue;
+    rows.push(
+      Object.fromEntries(header.map((name, index) => [name, row[index] ?? ''])),
+    );
+  }
+  return rows;
+}

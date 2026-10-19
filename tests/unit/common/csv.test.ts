@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readCsv, writeCsv } from '@/common/csv.js';
+import { readCsv, readCsvRecords, writeCsv } from '@/common/csv.js';
 
 const directories: string[] = [];
 
@@ -88,5 +88,24 @@ describe('readCsv', () => {
     ];
     await writeCsv(path, ['id', 'x', 'y'], rows);
     expect(await rowsOf(path)).toEqual([['id', 'x', 'y'], ...rows]);
+  });
+});
+
+describe('readCsvRecords', () => {
+  it('should map each row to its header columns', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'csv-')), 'a.csv');
+    writeFileSync(path, 'id,name\n1,a\n\n2,b\n');
+    expect(await readCsvRecords(path, ['id'])).toEqual([
+      { id: '1', name: 'a' },
+      { id: '2', name: 'b' },
+    ]);
+  });
+
+  it('should reject a file lacking a required column', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'csv-')), 'a.csv');
+    writeFileSync(path, 'id\n1\n');
+    await expect(readCsvRecords(path, ['id', 'name'])).rejects.toThrow(
+      'lacks the columns name',
+    );
   });
 });
