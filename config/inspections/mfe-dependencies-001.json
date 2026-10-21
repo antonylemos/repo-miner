@@ -7,8 +7,7 @@
       "packages": [
         "^@module-federation/",
         "^@originjs/vite-plugin-federation$",
-        "^@angular-architects/(module|native)-federation",
-        "^@softarc/native-federation",
+        "^@angular-architects/module-federation",
         "^webpack-module-federation"
       ],
       "patterns": [
@@ -17,6 +16,20 @@
         "cfg-exposes",
         "cfg-shared",
         "cfg-custom-webpack",
+        "src-load-remote"
+      ]
+    },
+    {
+      "id": "native-federation",
+      "packages": [
+        "^@angular-architects/native-federation",
+        "^@softarc/native-federation"
+      ],
+      "patterns": [
+        "cfg-native-federation",
+        "cfg-remotes",
+        "cfg-exposes",
+        "cfg-shared",
         "src-load-remote"
       ]
     },

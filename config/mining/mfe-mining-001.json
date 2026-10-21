@@ -57,8 +57,14 @@
     {
       "id": "dep-module-federation",
       "artifactTypes": ["dependency-manifest"],
-      "regex": "module-federation|vite-plugin-federation|native-federation|webpack-module-federation",
-      "rationale": "Dependency on a Module Federation or Native Federation package"
+      "regex": "module-federation|vite-plugin-federation|webpack-module-federation",
+      "rationale": "Dependency on a Module Federation package"
+    },
+    {
+      "id": "dep-native-federation",
+      "artifactTypes": ["dependency-manifest"],
+      "regex": "native-federation",
+      "rationale": "Dependency on a Native Federation package"
     },
     {
       "id": "dep-single-spa",
@@ -106,8 +112,14 @@
     {
       "id": "cfg-federation-plugin",
       "artifactTypes": ["build-config"],
-      "regex": "ModuleFederationPlugin|withModuleFederation|withNativeFederation|\\bfederation\\(|pluginModuleFederation|createModuleFederationConfig",
-      "rationale": "Federation plugin or helper registered in the build"
+      "regex": "ModuleFederationPlugin|withModuleFederation|\\bfederation\\(|pluginModuleFederation|createModuleFederationConfig",
+      "rationale": "Module Federation plugin or helper registered in the build"
+    },
+    {
+      "id": "cfg-native-federation",
+      "artifactTypes": ["build-config"],
+      "regex": "withNativeFederation|native-federation:build",
+      "rationale": "Native Federation helper or Angular builder registered in the build"
     },
     {
       "id": "cfg-remotes",
