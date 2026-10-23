@@ -32,7 +32,8 @@
       "**/netlify.toml",
       "**/_headers",
       "**/deploy/**",
-      "**/helm/**/*.{yaml,yml,tpl}"
+      "**/*helm*/**/*.{yaml,yml,tpl}",
+      "**/Chart.{yaml,yml}"
     ],
     "ci-workflow": [
       "**/.github/workflows/*.{yml,yaml}",
