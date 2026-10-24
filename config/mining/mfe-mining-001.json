@@ -19,10 +19,15 @@
       "**/angular.json",
       "**/project.json",
       "**/federation.config.*",
-      "**/module-federation.config.*"
+      "**/module-federation.config.*",
+      "**/next.config.*"
     ],
-    "runtime-manifest": ["**/*manifest*.json"],
-    "source": ["**/*.{js,jsx,mjs,cjs,ts,tsx,vue,svelte,html}"],
+    "next-config": ["**/next.config.*"],
+    "runtime-manifest": [
+      "**/*manifest*.json",
+      "**/*{importmap,importMap,import-map}*.json"
+    ],
+    "source": ["**/*.{js,jsx,mjs,cjs,ts,tsx,vue,svelte,html,ejs}"],
     "deployment": [
       "**/Dockerfile*",
       "**/docker-compose*.{yml,yaml}",
@@ -159,6 +164,18 @@
       "rationale": "Angular build pointed at a custom webpack config, how Angular units usually get federation"
     },
     {
+      "id": "cfg-route-rewrites",
+      "artifactTypes": ["next-config"],
+      "regex": "\\brewrites\\s*\\(",
+      "rationale": "Host that rewrites part of the URL space to another app, how Next.js Multi-Zones compose zones"
+    },
+    {
+      "id": "cfg-zone-path",
+      "artifactTypes": ["next-config"],
+      "regex": "\\b(basePath|assetPrefix)\\s*:",
+      "rationale": "Path under which an app and its assets are served, so a host can route to it as a zone"
+    },
+    {
       "id": "rt-remote-entry",
       "artifactTypes": [
         "build-config",
@@ -180,6 +197,12 @@
       "artifactTypes": ["runtime-manifest"],
       "regex": "exposedModule|remoteName|\"entry\"|remoteEntry",
       "rationale": "Manifest entry that maps a remote name to where it is served"
+    },
+    {
+      "id": "rt-import-map-entry",
+      "artifactTypes": ["runtime-manifest", "source"],
+      "regex": "\"imports\"\\s*:",
+      "rationale": "Import map that maps unit names to the URLs they are served from"
     },
     {
       "id": "src-remote-import",
@@ -228,6 +251,12 @@
       "artifactTypes": ["source"],
       "regex": "registerMicroApps|registerApplication\\(|singleSpaReact|singleSpaAngular|singleSpaVue|renderWithQiankun|qiankunWindow",
       "rationale": "Lifecycle registration of single-spa or qiankun"
+    },
+    {
+      "id": "src-import-map",
+      "artifactTypes": ["source"],
+      "regex": "type\\s*=\\s*[\"']?(systemjs-)?importmap|System\\.import\\(|import-map-overrides|importMapOverrides",
+      "rationale": "Import map or SystemJS loader that resolves a unit by name at runtime"
     },
     {
       "id": "src-custom-element",
@@ -326,6 +355,13 @@
       "regex": "module\\s+federation|native\\s+federation|single-spa|qiankun|web\\s+components?|custom\\s+elements?|iframes?",
       "ignoreCase": true,
       "rationale": "Integration technology named in the documentation"
+    },
+    {
+      "id": "doc-import-map-zones",
+      "artifactTypes": ["documentation"],
+      "regex": "import[\\s-]?maps?\\b|systemjs|multi[\\s-]?zones?",
+      "ignoreCase": true,
+      "rationale": "Import maps, SystemJS or Next.js Multi-Zones named in the documentation"
     },
     {
       "id": "doc-runtime-loading",

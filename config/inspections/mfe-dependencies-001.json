@@ -8,7 +8,9 @@
         "^@module-federation/",
         "^@originjs/vite-plugin-federation$",
         "^@angular-architects/module-federation",
-        "^webpack-module-federation"
+        "^webpack-module-federation",
+        "^vite-plugin-federation$",
+        "^@scality/module-federation$"
       ],
       "patterns": [
         "cfg-federation-plugin",
@@ -35,13 +37,18 @@
     },
     {
       "id": "single-spa",
-      "packages": ["^single-spa", "^@single-spa/"],
+      "packages": ["single-spa", "^@single-spa/"],
       "patterns": ["src-lifecycles"]
     },
     {
       "id": "qiankun",
       "packages": ["^qiankun$", "^@qiankun/"],
       "patterns": ["src-lifecycles"]
+    },
+    {
+      "id": "import-maps",
+      "packages": ["^systemjs", "^@types/systemjs$", "^import-map-overrides$"],
+      "patterns": ["src-import-map", "rt-import-map-entry"]
     },
     {
       "id": "web-components",
@@ -51,7 +58,8 @@
         "^@stencil/core$",
         "^@webcomponents/",
         "^@angular/elements$",
-        "^vue-custom-element$"
+        "^vue-custom-element$",
+        "^@angular-extensions/elements$"
       ],
       "patterns": ["src-custom-element"]
     },
@@ -66,7 +74,9 @@
         "^@luigi-project/",
         "^@podium/",
         "^frint",
-        "^open-components$"
+        "^open-components$",
+        "^@openmrs/esm-framework$",
+        "^@openedx/frontend-plugin-framework$"
       ],
       "patterns": ["src-mount-export"]
     },

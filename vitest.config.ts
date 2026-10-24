@@ -9,6 +9,12 @@ export default defineConfig({
     },
   },
   test: {
-    exclude: ['**/node_modules/**', '**/dist/**', '**/.{git}/**'],
+    exclude: [
+      '**/node_modules/**',
+      '**/dist/**',
+      '**/.{git}/**',
+      'data/**',
+      'docs/**',
+    ],
   },
 });
