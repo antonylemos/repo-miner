@@ -36,7 +36,7 @@ export function valueAt(data: unknown, path: string): unknown {
 }
 
 /** The text between the opening `---` on the first line and the next `---` line. */
-function frontMatter(text: string): string | null {
+export function frontMatter(text: string): string | null {
   const lines = text.replace(/^﻿/, '').split(/\r?\n/);
   if (lines[0]?.trimEnd() !== '---') return null;
   const end = lines.findIndex(

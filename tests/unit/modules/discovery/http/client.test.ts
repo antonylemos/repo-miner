@@ -32,6 +32,24 @@ it('should forward an explicit redirect policy and preserve the default', async 
   await client.send(request, signal);
   expect(fetchFn.mock.calls[1]?.[1]?.redirect).toBeUndefined();
 });
+it('should send the requested media type and keep the GitHub JSON one by default', async () => {
+  const fetchFn = vi
+    .fn<typeof fetch>()
+    .mockImplementation(async () => new Response('ok'));
+  const client = setup(fetchFn);
+  await client.send(request, signal);
+  await client.send(
+    { ...request, accept: 'application/vnd.github.star+json' },
+    signal,
+  );
+  const accepts = fetchFn.mock.calls.map(
+    (call) => (call[1]?.headers as Record<string, string> | undefined)?.Accept,
+  );
+  expect(accepts).toEqual([
+    'application/vnd.github+json',
+    'application/vnd.github.star+json',
+  ]);
+});
 it('should count retries before network', async () => {
   const order: string[] = [];
   const fetchFn = vi.fn(async () => {

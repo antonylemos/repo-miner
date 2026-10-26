@@ -1,0 +1,84 @@
+{
+  "acquisition": "data/acquisitions/mfe-corpus-001",
+  "version": "1",
+  "languages": {
+    "measured": [
+      "TypeScript",
+      "JavaScript",
+      "Vue",
+      "Svelte",
+      "Astro",
+      "HTML",
+      "CSS",
+      "SCSS",
+      "Less",
+      "GraphQL",
+      "SQL",
+      "Shell",
+      "Python",
+      "Java",
+      "Kotlin",
+      "Go",
+      "Rust",
+      "Ruby",
+      "PHP",
+      "C#",
+      "C",
+      "C++",
+      "Swift",
+      "Dart"
+    ],
+    "frontend": [
+      "TypeScript",
+      "JavaScript",
+      "Vue",
+      "Svelte",
+      "Astro",
+      "HTML",
+      "CSS",
+      "SCSS",
+      "Less"
+    ],
+    "excludeFiles": [
+      "**/package-lock.json",
+      "**/npm-shrinkwrap.json",
+      "**/yarn.lock",
+      "**/pnpm-lock.yaml"
+    ]
+  },
+  "annotations": [
+    { "column": "repo_type", "name": "domain" },
+    { "column": "approaches", "name": "approach", "multipleLabel": "hybrid" },
+    { "column": "ui_technologies", "name": "ui_technologies" },
+    { "column": "build_tools", "name": "build_tools" }
+  ],
+  "reviews": [
+    {
+      "name": "snapshot_apps",
+      "files": "docs/mfe-structure-review/[0-9]*.md",
+      "statuses": ["final"],
+      "number": "Aplicações frontend no snapshot:\\s*(\\d+)"
+    },
+    {
+      "name": "unrelated_units",
+      "files": "docs/mfe-composition-review/[0-9]*.md",
+      "statuses": ["final"],
+      "list": "Unidades sem relação:\\s*(.+?)\\.?\\s*$",
+      "separator": ",",
+      "empty": ["nenhuma"]
+    },
+    {
+      "name": "composition_types",
+      "files": "docs/mfe-composition-review/[0-9]*.md",
+      "statuses": ["final"],
+      "column": { "section": "Relações", "header": "Tipo" }
+    }
+  ],
+  "derived": [
+    {
+      "name": "frontend_units",
+      "difference": ["snapshot_apps", "unrelated_units"]
+    }
+  ],
+  "validation": { "discovery": "data/discovery/mfe-round-002" }
+}

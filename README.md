@@ -74,6 +74,9 @@ pnpm run cli mine --config config/mining/<mineracao>.json --output data/mining/m
 
 # 9. Listar as dependências declaradas nos manifestos, ligadas às ocorrências da mineração (sem rede, git nem token)
 pnpm run cli inspect-dependencies --config config/inspections/<inspecao>.json --output data/inspections/inspecao-001
+
+# 10. Medir o perfil dos repositórios na data do clone (git local; GITHUB_TOKEN só para páginas da API que faltam)
+pnpm run cli profile --config config/profiles/<perfil>.json --output data/profiles/perfil-001
 ```
 
 O dry-run retorna `2` quando alguma subconsulta passa de 1.000 resultados, sinal de que a partição precisa ser refinada antes da rodada. Uma rodada nova não reutiliza um diretório que já contenha `discovery.sqlite`.
@@ -392,10 +395,91 @@ Caminhos são ordenados por code point, não pela localidade.
 
 **Códigos de saída do `inspect-dependencies`:** `0` quando grava toda a saída; `1` em erro de configuração, de entrada, de integridade, de leitura ou de escrita.
 
+## Perfil dos repositórios
+
+`profile --config <arquivo> --output <dir>` mede, para cada repositório de uma aquisição, o que um perfil descritivo pede: arquivos, linguagens, commits, tempo desde o último commit, idade, stars, forks, contribuidores e variáveis tiradas de anotações e de revisões. Depois resume tudo em mediana, IQR, mínimo e máximo (variáveis numéricas) e n/% por categoria. Não altera a aquisição, a amostra, os clones nem as revisões.
+
+```sh
+pnpm run cli profile --config config/profiles/mfe-profile-001.json --output data/profiles/mfe-profile-001
+```
+
+**Entradas.** A aquisição (`acquisition`), a amostra que o `manifest.json` dela registra (`clones.csv` e os clones em `repos/`) e os arquivos de revisão declarados na configuração. Antes de medir, o comando verifica a aquisição como o `mine` e confere que cada repositório tem uma linha `cloned` em `clones.csv` com o mesmo `commit_sha` do `acquisition.csv` e que o clone contém esse commit. Lista **todos** os problemas e termina com código `1`, sem gravar nada.
+
+**Data de referência.** É o `attempted_at` da linha do repositório em `clones.csv`, gravado em `reference_at`: o commit do snapshot é o HEAD naquele instante. As medidas na data de referência (forks, dias desde o último commit, idade) usam esse instante, incluído, e não "hoje". **Exceção: `stars`**, que o GitHub só informa como contagem atual (veja abaixo).
+
+**Medidas locais.**
+
+| Coluna | Como é medida |
+| --- | --- |
+| `files` | Arquivos sob `files/` do snapshot, inclusive os excluídos das linguagens. |
+| `excluded_files` | Arquivos que casam com `languages.excludeFiles` (como lockfiles). |
+| `frontend_share` | Soma das proporções das linguagens de `languages.frontend`. |
+| `dominant_language` | Linguagem medida de maior proporção; empate pela ordem alfabética. |
+| `commits` | Commits ancestrais do commit do snapshot, ele incluído (`git rev-list --count`). |
+| `last_commit_at` | Data de commit (committer date) do commit do snapshot, como o git a imprime (`%cI`). |
+| `days_since_last_commit` | Dias completos entre `last_commit_at` e `reference_at`. |
+| `created_at` | Data de criação do repositório (`created_at` de `GET /repos/{owner}/{name}`). |
+| `age_days` | Idade: dias completos entre `created_at` e `reference_at`. |
+
+As linguagens são recalculadas a partir do snapshot, pelo mesmo mapa de extensões da aquisição. A proporção de uma linguagem são seus bytes sobre os bytes de **todas as linguagens de `languages.measured`**; os arquivos excluídos ficam fora de toda soma e as demais linguagens (JSON, Markdown, `Other`...) aparecem em `languages.csv` só com bytes, como contexto. Um snapshot sem nenhuma linguagem medida fica com as proporções vazias. O git roda no clone só para leitura: sem busca lazy de objetos (`GIT_NO_LAZY_FETCH=1`), sem locks opcionais e sem manutenção automática. Os clones da amostra são `blob:none`, e nenhum desses comandos lê blobs.
+
+**Medidas pela API do GitHub.** `GET /repos/{owner}/{name}` dá `created_at` e diz se o repositório está disponível: se responde 404 ou 451 (apagado, privado, bloqueado), `created_at`, `age_days`, `stars`, `forks` e `contributors` ficam vazios, `api_status` registra o código e o repositório segue com as medidas locais. Depois disso, cada medida depende só do seu endpoint, e um 404 ou 451 nele deixa vazia apenas a sua medida.
+
+- `forks` conta os forks de `/forks?sort=oldest` com `created_at` até `reference_at`.
+- `contributors` conta as identidades distintas entre os autores dos commits listados a partir do SHA do snapshot (`/commits?sha=<sha>`): o login da conta ou, sem conta, o e-mail em minúsculas, sem bots (`type` `Bot` ou nome ou login terminado em `[bot]`).
+- `stars` é a **contagem atual** de `/stargazers/count`, lida em `stars_observed_at`, e **não** a contagem em `reference_at`: o GitHub não lista mais os stargazers com a data de cada star (o endpoint REST `/stargazers` responde 404 e o GraphQL devolve a lista vazia, verificado em 25/10/2026), então não há como reconstruí-la. Compare `stars` com `stars_observed_at`, não com `reference_at`.
+
+Outro erro que persiste depois das novas tentativas termina com código `1`, sem gravar o perfil, e mantém as páginas já obtidas. Se **todos** os repositórios respondem 404 ou 451 em `GET /repos`, o comando termina com código `1` sem gravar: isso aponta para o token ou para a API, não para repositórios apagados.
+
+**Cache da API.** Cada resposta (`repository`, `stargazers-count`, `forks`, `commits`) é gravada em `<output>/api/<owner>__<name>/<endpoint>-<n>.json`, com `url`, `fetchedAt`, `status`, `body` e o `next` da paginação, assim que chega. Numa reexecução, as páginas gravadas são reaproveitadas e a API só é consultada pelo que falta. **`GITHUB_TOKEN` só é exigido quando falta alguma página**; com o cache completo, o perfil é refeito sem rede nem token. Uma página gravada para outro endereço (por exemplo, outro SHA) ou danificada é buscada de novo.
+
+**Variáveis de anotação.** Cada item de `annotations` copia a coluna `column` do `acquisition.csv` para a variável `name`. Com `multipleLabel`, uma célula com dois ou mais valores separados por `;` vira o rótulo (como `hybrid`), e a coluna `<name>_values` guarda a célula original (também quando há um só valor, para que a variável de vários valores fique completa).
+
+**Variáveis de revisão (extratores).** Cada item de `reviews` declara `name`, `files` (glob), `statuses` aceitos para `annotation.status` e **um** extrator. A revisão de um repositório é o arquivo cujo front matter tem o mesmo `full_name`; ele precisa ter também o mesmo `commit` do snapshot e um status aceito. Falta, duplicata, commit diferente ou status fora da lista terminam com código `1`, listando todos os casos, antes de qualquer requisição à API. Os extratores rodam sobre o texto depois do front matter, linha a linha:
+
+| Extrator | Campos | Valor |
+| --- | --- | --- |
+| `number` | expressão com um grupo | O inteiro capturado. |
+| `list` | expressão com um grupo, `separator`, `empty` (opcional) | O número de itens não vazios do texto capturado, ou 0 quando o texto é um dos `empty`. |
+| `column` | `{ "section", "header" }` | Os valores distintos da coluna `header` da primeira tabela da seção `## <section>`, ordenados e unidos por `;`; vazio quando a seção existe mas não tem tabela. |
+
+Expressão que não casa, seção ausente ou tabela sem a coluna terminam com código `1` e informam o arquivo e a variável. Itens de `derived` (`name`, `difference: [a, b]`) calculam `a − b` entre variáveis numéricas já definidas; referência a variável inexistente ou não numérica termina com código `1`.
+
+**Verificação contra a discovery (opcional).** Com `validation.discovery`, o comando também reconstrói os forks no instante de cada observação que a discovery registrou (`stargazerCount` e `forks_count` em `candidates.csv`) e compara; para as stars, compara a contagem atual com cada valor registrado, e a diferença é o crescimento desde a observação, não um erro. `validation.csv` traz uma linha por comparação (`measure`, `at`, `reconstructed`, `recorded`, `difference`) e também a comparação entre os commits listados pela API (`reconstructed`) e os contados no clone (`recorded`). Um valor ausente na discovery não gera linha. Diferenças são dados, não erros: o comando termina com `0`.
+
+**Configuração.** Campo desconhecido, ausente ou de tipo inválido, `frontend` fora de `measured`, nome de variável repetido, expressão regular inválida (ou sem exatamente um grupo) e mais de um extrator por revisão terminam com código `1`, sem gravar nada. Os termos do estudo (linguagens, colunas, seções, expressões) vêm todos do JSON; o código não os conhece. Veja `config/profiles/mfe-profile-001.json`.
+
+| Campo | Significado |
+| --- | --- |
+| `acquisition` | Diretório de uma aquisição. |
+| `version` | Versão da configuração, texto não vazio, declarada pelo pesquisador. |
+| `languages.measured` | Linguagens (nomes do mapa de extensões) que entram no denominador da proporção. |
+| `languages.frontend` | Subconjunto de `measured` que compõe `frontend_share`. |
+| `languages.excludeFiles` | Globs de arquivos fora de toda soma de linguagem (lockfiles). |
+| `annotations`, `reviews`, `derived` | Variáveis, como descrito acima. |
+| `validation.discovery` | Diretório de uma discovery, para a verificação. Opcional. |
+
+**Saídas em `--output`:**
+
+| Arquivo | Conteúdo |
+| --- | --- |
+| `profile.csv` | Uma linha por repositório, na ordem do `acquisition.csv`: `id`, `full_name`, `commit_sha`, `reference_at`, `files`, `excluded_files`, `dominant_language`, `frontend_share`, `commits`, `last_commit_at`, `days_since_last_commit`, `created_at`, `age_days`, `stars`, `stars_observed_at`, `forks`, `contributors`, `api_status`, e depois as variáveis de anotação, de revisão e derivadas, na ordem da configuração. |
+| `languages.csv` | `id`, `full_name`, `language`, `group` (`measured`, `context` ou `excluded`), `files`, `bytes` e `share` (6 casas; vazio fora de `measured`), ordenado pela ordem do `acquisition.csv` e pelo nome da linguagem. |
+| `validation.csv` | `id`, `full_name`, `measure`, `at`, `reconstructed`, `recorded` e `difference`. |
+| `report.md` | Variáveis numéricas (n, vazios, mediana, Q1, Q3, IQR, mínimo, máximo) e categóricas (n e % por valor). Quantis por interpolação linear (tipo 7 do R, padrão do numpy e do pandas), com até 2 casas decimais. Numa variável de vários valores, um repositório conta em cada valor que tem, e os percentuais não somam 100%. |
+| `manifest.json` | A configuração, seu SHA-256, `version`, o diretório e o SHA-256 do `manifest.json` da aquisição e o SHA-256 de cada arquivo de revisão lido. |
+| `api/` | As respostas brutas da API (cache). |
+
+**Reexecução.** Rodar de novo com o mesmo `--output`, a mesma configuração e a mesma aquisição refaz `profile.csv`, `languages.csv`, `validation.csv` e `report.md` com bytes idênticos quando as páginas da API já estão gravadas. Os arquivos derivados são montados em `<output>/.staging` e trocados juntos no final, sem apagar `api/`; uma falha deixa os anteriores intactos. Revisões que mudaram desde a execução anterior são relatadas num aviso e aceitas. Uma configuração ou aquisição diferente da registrada no `manifest.json`, ou um diretório não vazio que não seja uma saída do `profile`, termina com código `1` sem alterar nada: use outro diretório de saída.
+
+**Limitações.** As stars são a contagem atual, não a da data de referência. Os forks são reconstruídos por carimbo de tempo: um fork apagado depois da data de referência não aparece, e a contagem pode ficar um pouco abaixo da real (a diferença aparece em `validation.csv`). Um repositório renomeado é seguido pelo redirecionamento da API; um repositório apagado depois do clone fica com as medidas da API vazias. O mapa de extensões é aproximado e não detecta a linguagem pelo conteúdo. Não conta linhas de código nem detecta bibliotecas de componentes.
+
+**Códigos de saída do `profile`:** `0` quando grava toda a saída; `1` em erro de configuração, de entrada, de integridade, de revisão, de leitura, de API (inclusive `GITHUB_TOKEN` ausente quando falta uma página) ou de escrita.
+
 ## Códigos de saída
 
-- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine` ou pelo `inspect-dependencies`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
-- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `inspect-dependencies`, configuração inválida, mineração ou aquisição alterada depois da mineração e saída feita com outra configuração ou mineração, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
+- `0`: ajuda exibida, relatório exportado, amostra gravada pelo `sample`, amostra completa no `clone`, todos os selecionados adquiridos no `acquire`, saída completa gravada pelo `mine`, pelo `inspect-dependencies` ou pelo `profile`, dry-run sem subconsulta acima de 1.000 resultados, ou rodada com busca completa e todo trabalho necessário concluído, inclusive quando resta autoria terminal `unknown`.
+- `1`: erro fatal, como opções ou catálogo inválidos, token ausente, diretório ou banco inexistente ou conflitante, banco de formato incompatível, falha de requisição no dry-run, `git` ausente ou diretório sem amostra no `clone`, ou, no `acquire`, configuração ou anotações inválidas, amostra alterada e saída feita com outra configuração, ou, no `mine`, configuração inválida, snapshot ausente ou alterado e saída feita com outra configuração ou aquisição, ou, no `inspect-dependencies`, configuração inválida, mineração ou aquisição alterada depois da mineração e saída feita com outra configuração ou mineração, ou, no `profile`, configuração, entradas ou revisões inválidas, clone sem o commit do snapshot, `GITHUB_TOKEN` ausente com página da API faltando, erro persistente da API e saída feita com outra configuração ou aquisição, ou, no `sample`, configuração inválida, rodada com arquivos faltando, `candidates.csv` alterado ou com contagens divergentes do `coverage.json`, `size` maior que N e diretório de saída que já contém uma amostra.
 - `2`: rodada parcial (subconsulta saturada, incompleta ou com falha, coleta ainda necessária pendente, com falha ou limitada por orçamento, interrupção) ou dry-run com subconsulta acima de 1.000 resultados; no `clone`, menos de `size` repositórios clonados (ranking esgotado ou interrupção); no `acquire`, algum selecionado sem snapshot (falha de leitura ou interrupção).
 
 ## Limitações

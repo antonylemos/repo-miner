@@ -22,6 +22,8 @@ export type HttpRequest = {
   method?: 'GET' | 'POST';
   /** Omitted policies preserve fetch's default redirect behavior. */
   redirect?: RequestRedirect;
+  /** The `Accept` header; omitted, the GitHub JSON media type. */
+  accept?: string;
   body?: string;
   beforeAttempt?: () => void;
   onAttemptFinished?: (event: HttpAttemptEvent) => void;
@@ -148,7 +150,7 @@ async function fetchWithTimeout(
   try {
     if (callerSignal.aborted) controller.abort(callerSignal.reason);
     const headers: Record<string, string> = {
-      Accept: 'application/vnd.github+json',
+      Accept: request.accept ?? 'application/vnd.github+json',
       Authorization: `Bearer ${options.token}`,
       'X-GitHub-Api-Version': API_VERSION,
       'User-Agent': 'repo-miner/0.1.0',
